@@ -119,7 +119,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                     c.name(), c.ip, c.port, c.proto, c.up.get(), c.down.get(), c.rate,
                     c.url, now - c.last < 5000, c.last
                 )
-            }.sortedByDescending { it.last }
+            }.sortedWith(compareBy<ConnUi> { it.port == 53 }.thenByDescending { it.last })
             AppUi(
                 uid = uid,
                 pkg = m.pkgs.firstOrNull() ?: "uid:$uid",

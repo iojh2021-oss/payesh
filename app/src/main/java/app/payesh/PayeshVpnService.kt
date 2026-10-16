@@ -1,6 +1,12 @@
 package app.payesh
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
@@ -57,10 +63,14 @@ class PayeshVpnService : VpnService() {
 
     private fun startVpn() {
         if (running) return
+        goForeground()
         val b = Builder()
             .setSession("Payesh")
             .addAddress(CLIENT_IP, 32)
             .addRoute("0.0.0.0", 0)
+            // IPv6 is routed into the tunnel too, so it cannot bypass monitoring (it is refused -> apps fall back to IPv4)
+            .addAddress("fd00:8::2", 128)
+            .addRoute("::", 0)
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
             .setMtu(MTU)
@@ -96,6 +106,7 @@ class PayeshVpnService : VpnService() {
         udpFlows.values.toList().forEach { it.close() }
         try { tun?.close() } catch (_: Exception) {}
         tun = null
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopSelf()
     }
 
@@ -104,18 +115,69 @@ class PayeshVpnService : VpnService() {
         try { synchronized(outLock) { out.write(p) } } catch (_: Exception) {}
     }
 
-    private fun owner(proto: Int, sp: Int, rem: ByteArray, dp: Int): Int = try {
-        cm.getConnectionOwnerUid(
-            proto,
-            InetSocketAddress(clientAddr, sp),
-            InetSocketAddress(InetAddress.getByAddress(rem), dp)
-        )
+    private fun ownerOf(proto: Int, local: InetAddress, sp: Int, remote: InetAddress, dp: Int): Int = try {
+        cm.getConnectionOwnerUid(proto, InetSocketAddress(local, sp), InetSocketAddress(remote, dp))
     } catch (_: Exception) { -1 }
+
+    private fun owner(proto: Int, sp: Int, rem: ByteArray, dp: Int, retry: Boolean = false): Int {
+        val r = InetAddress.getByAddress(rem)
+        var uid = ownerOf(proto, clientAddr, sp, r, dp)
+        var i = 0
+        while (retry && uid < 0 && i < 3) {
+            try { Thread.sleep(40) } catch (_: Exception) {}
+            uid = ownerOf(proto, clientAddr, sp, r, dp); i++
+        }
+        return uid
+    }
+
+    private fun goForeground() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(NotificationChannel("payesh", "Payesh", NotificationManager.IMPORTANCE_LOW))
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(this, "payesh")
+                .setSmallIcon(R.drawable.ic_notif)
+                .setContentTitle("پایش")
+                .setContentText("رصد ترافیک برنامه‌ها فعال است")
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            else startForeground(1, n)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** IPv6: record who tried to connect where, and refuse (TCP RST) so the app falls back to IPv4. */
+    private fun handle6(buf: ByteArray, n: Int) {
+        if (n < 44) return
+        val nh = buf[6].toInt() and 0xff
+        if (nh != 6 && nh != 17) return
+        val src = buf.copyOfRange(8, 24)
+        val dst = buf.copyOfRange(24, 40)
+        val sp = Pkt.u16(buf, 40)
+        val dp = Pkt.u16(buf, 42)
+        val srcA = InetAddress.getByAddress(src)
+        val dstA = InetAddress.getByAddress(dst)
+        val proto = if (nh == 6) OsConstants.IPPROTO_TCP else OsConstants.IPPROTO_UDP
+        val uid = ownerOf(proto, srcA, sp, dstA, dp)
+        val c = Tracker.conn(uid, "IPv6", dstA.hostAddress ?: "?", dp)
+        c.touch()
+        if (nh == 6 && n >= 54) {
+            val flags = buf[53].toInt() and 0x3f
+            if ((flags and Pkt.SYN) != 0 && (flags and Pkt.ACK) == 0) {
+                val seq = Pkt.u32(buf, 44)
+                writeTun(Pkt.tcp6Rst(dst, src, dp, sp, 0, (seq + 1) and Pkt.MASK, Pkt.RST or Pkt.ACK))
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- packet dispatch
 
     private fun handle(buf: ByteArray, n: Int) {
-        if (n < 20 || (buf[0].toInt() shr 4) != 4) return
+        val ver = buf[0].toInt() shr 4
+        if (ver == 6) { handle6(buf, n); return }
+        if (n < 20 || ver != 4) return
         val ihl = (buf[0].toInt() and 0x0f) * 4
         val total = minOf(Pkt.u16(buf, 2), n)
         val proto = buf[9].toInt() and 0xff
@@ -187,10 +249,8 @@ class PayeshVpnService : VpnService() {
 
         init {
             protect(ds)
-            if (dp != 53) {
-                val uid = owner(OsConstants.IPPROTO_UDP, sp, rem, dp)
-                conn = Tracker.conn(uid, "UDP", remStr, dp)
-            }
+            val uid = owner(OsConstants.IPPROTO_UDP, sp, rem, dp)
+            conn = Tracker.conn(uid, "UDP", remStr, dp)
             ds.connect(InetAddress.getByAddress(rem), dp)
             ds.soTimeout = if (dp == 53) 8000 else 30000
             pool.execute { receiveLoop() }
@@ -200,6 +260,7 @@ class PayeshVpnService : VpnService() {
             try {
                 ds.send(DatagramPacket(d, off, len))
                 conn?.let { it.up.addAndGet(len.toLong()); it.touch() }
+                if (dp == 53) Sniff.dnsQuery(d.copyOfRange(off, off + len))?.let { conn?.url = "DNS: $it" }
             } catch (_: Exception) { close() }
         }
 
@@ -260,7 +321,7 @@ class PayeshVpnService : VpnService() {
         private fun run() {
             val s = Socket()
             try {
-                val uid = owner(OsConstants.IPPROTO_TCP, sp, rem, dp)
+                val uid = owner(OsConstants.IPPROTO_TCP, sp, rem, dp, true)
                 conn = Tracker.conn(uid, "TCP", remStr, dp)
                 protect(s)
                 s.connect(InetSocketAddress(InetAddress.getByAddress(rem), dp), 10000)

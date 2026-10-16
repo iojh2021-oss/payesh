@@ -84,7 +84,7 @@ fun portName(p: Int): String = when (p) {
 }
 
 @Composable
-fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit) {
+fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettings: () -> Unit) {
     val apps by vm.apps.collectAsState()
     val granted by vm.usageGranted.collectAsState()
     val running by Tracker.running.collectAsState()
@@ -158,6 +158,23 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit) {
                 }
             }
             item { SummaryCard(down, up, activeCount) }
+            item {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
+                        .clickable(onClick = onVpnSettings).padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Shield, null, tint = Accent)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("رصد کامل و بدون فرار", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            "اینجا بزن و برای «پایش» گزینه‌های «VPN همیشه روشن» و «مسدود کردن اتصال‌های بدون VPN» را فعال کن.",
+                            color = Muted, fontSize = 11.sp
+                        )
+                    }
+                }
+            }
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(listOf(Filter.USER, Filter.SYS, Filter.IDLE)) { f ->

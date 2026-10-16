@@ -74,6 +74,25 @@ object Pkt {
         return p
     }
 
+    /** IPv6 TCP segment without payload (used to refuse IPv6 connections). */
+    fun tcp6Rst(src: ByteArray, dst: ByteArray, sp: Int, dp: Int, seq: Long, ack: Long, flags: Int): ByteArray {
+        val p = ByteArray(60)
+        p[0] = 0x60
+        put16(p, 4, 20); p[6] = 6; p[7] = 64
+        System.arraycopy(src, 0, p, 8, 16)
+        System.arraycopy(dst, 0, p, 24, 16)
+        val t = 40
+        put16(p, t, sp); put16(p, t + 2, dp)
+        put32(p, t + 4, seq and MASK); put32(p, t + 8, ack and MASK)
+        p[t + 12] = (5 shl 4).toByte(); p[t + 13] = flags.toByte(); put16(p, t + 14, 0)
+        var s = 0L
+        var i = 0
+        while (i < 16) { s += u16(src, i) + u16(dst, i); i += 2 }
+        s += 20 + 6
+        put16(p, t + 16, fold(sum(p, t, 20, s)))
+        return p
+    }
+
     fun udp(src: ByteArray, dst: ByteArray, sp: Int, dp: Int, data: ByteArray, len: Int): ByteArray {
         val ul = 8 + len
         val total = 20 + ul

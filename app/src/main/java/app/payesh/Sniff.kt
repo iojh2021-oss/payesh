@@ -48,10 +48,23 @@ object Sniff {
                 val rdlen = Pkt.u16(d, p + 8)
                 p += 10
                 if (type == 1 && rdlen == 4 && p + 4 <= d.size) Tracker.dns[Pkt.ip(d, p)] = qname
+                else if (type == 28 && rdlen == 16 && p + 16 <= d.size) {
+                    try {
+                        Tracker.dns[java.net.InetAddress.getByAddress(d.copyOfRange(p, p + 16)).hostAddress ?: ""] = qname
+                    } catch (_: Exception) {
+                    }
+                }
                 p += rdlen
             }
         } catch (_: Exception) {
         }
+    }
+
+    /** Queried name of a DNS request. */
+    fun dnsQuery(d: ByteArray): String? = try {
+        if (d.size < 13 || (d[2].toInt() and 0x80) != 0) null else readName(d, 12).first.ifEmpty { null }
+    } catch (_: Exception) {
+        null
     }
 
     /** Server name from a TLS ClientHello (may be truncated). */
