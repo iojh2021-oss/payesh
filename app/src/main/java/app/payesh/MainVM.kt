@@ -28,7 +28,8 @@ data class AppUi(
     val uid: Int, val pkg: String, val label: String, val system: Boolean,
     val icon: ImageBitmap?, val up: Long, val down: Long, val rate: Long,
     val active: Boolean, val foreground: Boolean?, val downloading: Boolean,
-    val last: Long, val conns: List<ConnUi>
+    val last: Long, val conns: List<ConnUi>,
+    val outside: Long = 0L
 )
 
 private class Meta(val pkgs: List<String>, val label: String, val system: Boolean, val icon: ImageBitmap?)
@@ -69,6 +70,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     val usageGranted = MutableStateFlow(true)
     private val cache = HashMap<Int, Meta>()
     private var installedUids: Set<Int> = emptySet()
+    @Volatile private var outside: Map<Int, Long> = emptyMap()
 
     init {
         viewModelScope.launch(Dispatchers.Default) {
@@ -81,6 +83,13 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                 Tracker.tick(now - last)
                 last = now
                 if (++round % 40 == 0) loadInstalled()
+                if (round % 10 == 0) {
+                    outside = try {
+                        if (Tracker.running.value && Fg.granted(ctx)) SysStats.outside(ctx) else emptyMap()
+                    } catch (_: Exception) {
+                        emptyMap()
+                    }
+                }
                 usageGranted.value = Fg.granted(ctx)
                 apps.value = build(Fg.foreground(ctx), now)
             }
@@ -98,7 +107,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         val pm = ctx.packageManager
         val pkgs = try { pm.getPackagesForUid(uid)?.toList() } catch (_: Exception) { null }
         if (pkgs.isNullOrEmpty()) {
-            Meta(emptyList(), if (uid < 0) "نامشخص" else "سیستم ($uid)", true, null)
+            Meta(emptyList(), when { uid == -5 -> "اشتراک اینترنت (هات‌اسپات)"; uid < 0 -> "نامشخص"; else -> "سیستم ($uid)" }, true, null)
         } else try {
             val ai = pm.getApplicationInfo(pkgs[0], 0)
             val sys = (ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
@@ -112,6 +121,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     private fun build(fg: Set<String>?, now: Long): List<AppUi> {
         val ids = HashSet<Int>(installedUids)
         ids.addAll(Tracker.uids.keys)
+        ids.addAll(outside.keys)
         return ids.map { uid ->
             val m = meta(uid)
             val conns = (Tracker.uids[uid]?.conns?.values ?: emptyList<Conn>()).map { c ->
@@ -133,7 +143,8 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                 foreground = fg?.let { s -> m.pkgs.any { it in s } },
                 downloading = conns.any { it.rate > 30_000 },
                 last = conns.maxOfOrNull { it.last } ?: 0L,
-                conns = conns
+                conns = conns,
+                outside = outside[uid] ?: 0L
             )
         }.sortedWith(
             compareByDescending<AppUi> { it.downloading }

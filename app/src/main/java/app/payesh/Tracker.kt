@@ -29,6 +29,7 @@ object Tracker {
     val uids = ConcurrentHashMap<Int, UidStats>()
     val dns = ConcurrentHashMap<String, String>() // ip -> domain
     val running = MutableStateFlow(false)
+    @Volatile var sessionStart = 0L
 
     fun conn(uid: Int, proto: String, ip: String, port: Int): Conn {
         val u = uids.getOrPut(uid) { UidStats(uid) }

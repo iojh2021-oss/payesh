@@ -80,7 +80,7 @@ fun ltr(s: String) = "\u200E$s"
 fun portName(p: Int): String = when (p) {
     443 -> "443 (HTTPS)"; 80 -> "80 (HTTP)"; 53 -> "53 (DNS)"; 853 -> "853 (DoT)"
     123 -> "123 (NTP)"; 5228 -> "5228 (Google/FCM)"; 993 -> "993 (IMAPS)"; 587 -> "587 (SMTP)"
-    8080 -> "8080 (HTTP-alt)"; 1935 -> "1935 (RTMP)"; else -> "$p"
+    8080 -> "8080 (HTTP-alt)"; 1935 -> "1935 (RTMP)"; 0 -> "— (ping)"; else -> "$p"
 }
 
 @Composable
@@ -94,7 +94,8 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
 
     Box(Modifier.fillMaxSize().background(Bg)) {
         if (page == 0) LiveScreen(vm, apps, running, page, { page = it }, onUsage, onVpnSettings)
-        else HistoryScreen(page) { page = it }
+        else if (page == 1) HistoryScreen(page) { page = it }
+        else SysStatsScreen(page) { page = it }
 
         // Bottom bar (like the "Buy Ticket" bar in the reference)
         Row(
@@ -133,7 +134,7 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
 @Composable
 fun PageSwitch(page: Int, onPage: (Int) -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(4.dp)) {
-        listOf("زنده", "تاریخچه (دیتابیس)").forEachIndexed { i, t ->
+        listOf("زنده", "تاریخچه", "آمار سیستم").forEachIndexed { i, t ->
             val sel = page == i
             Box(
                 Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
@@ -234,12 +235,13 @@ fun LiveScreen(
                 Column(Modifier.weight(1f)) {
                     Text("رصد کامل و بدون فرار", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        "اینجا بزن و برای «پایش» گزینه‌های «VPN همیشه روشن» و «مسدود کردن اتصال‌های بدون VPN» را فعال کن.",
+                        "اینجا بزن و فقط «VPN همیشه روشن» را برای «پایش» فعال کن. گزینهٔ «مسدود کردن اتصال‌های بدون VPN» را فقط وقتی سرویس پایدار بود روشن کن؛ اگر سرویس بایستد، اینترنت کامل قطع می‌شود.",
                         color = Muted, fontSize = 11.sp
                     )
                 }
             }
         }
+        item { LogCard() }
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(listOf(Filter.USER, Filter.SYS, Filter.IDLE)) { f ->
@@ -389,6 +391,7 @@ fun AppRow(a: AppUi, running: Boolean) {
                     }
                     if (a.conns.isEmpty() && running) Badge("بدون ترافیک", sub)
                     if (a.system) Badge("سیستمی", sub)
+                    if (a.outside > 0) Badge("خارج از رصد ${fmt(a.outside)}", if (hot) OnAccent else Orange)
                 }
             }
             Column(horizontalAlignment = Alignment.End) {

@@ -74,6 +74,18 @@ object Pkt {
         return p
     }
 
+    /** Builds an ICMP echo reply from an echo request message (data[off until off+len] is the ICMP message). */
+    fun icmpReply(src: ByteArray, dst: ByteArray, data: ByteArray, off: Int, len: Int): ByteArray {
+        val total = 20 + len
+        val p = ByteArray(total)
+        ipHeader(p, total, 1, src, dst)
+        System.arraycopy(data, off, p, 20, len)
+        p[20] = 0; p[21] = 0
+        put16(p, 22, 0)
+        put16(p, 22, fold(sum(p, 20, len, 0)))
+        return p
+    }
+
     /** IPv6 TCP segment without payload (used to refuse IPv6 connections). */
     fun tcp6Rst(src: ByteArray, dst: ByteArray, sp: Int, dp: Int, seq: Long, ack: Long, flags: Int): ByteArray {
         val p = ByteArray(60)

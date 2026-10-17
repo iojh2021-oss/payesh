@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.net.ConnectivityManager
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import java.io.FileInputStream
@@ -19,19 +21,45 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
 import kotlin.random.Random
 
+/** Runs tasks one after another on the shared pool (no dedicated thread per flow). */
+private class SerialExec(private val submit: (Runnable) -> Boolean) {
+    private val q = java.util.ArrayDeque<Runnable>()
+    private var active = false
+
+    @Synchronized
+    fun execute(r: Runnable) {
+        q.add(r)
+        if (!active) next()
+    }
+
+    @Synchronized
+    private fun next() {
+        val r = q.poll()
+        if (r == null) { active = false; return }
+        active = true
+        val ok = submit(Runnable { try { r.run() } finally { next() } })
+        if (!ok) { active = false; q.clear() }
+    }
+
+    @Synchronized
+    fun shutdown() { q.clear() }
+}
+
 /**
- * Local VPN that sees every IPv4 packet of every app, attributes it to an app (UID),
+ * Local VPN that sees every packet of every app, attributes it to an app (UID),
  * records destination / port / bytes, and forwards it to the real network via protected sockets.
- * Nothing leaves the device except the normal traffic of the apps themselves.
  */
 class PayeshVpnService : VpnService() {
 
@@ -39,38 +67,85 @@ class PayeshVpnService : VpnService() {
         const val ACTION_STOP = "app.payesh.STOP"
         const val CLIENT_IP = "10.8.0.2"
         const val MTU = 1400
+        private var crashHook = false
     }
 
     private var tun: ParcelFileDescriptor? = null
     private var flusher: ScheduledExecutorService? = null
     @Volatile private var running = false
+    @Volatile private var wantRunning = false
+    private val restarts = ArrayList<Long>()
     private lateinit var out: FileOutputStream
     private val outLock = Any()
-    private val pool: ExecutorService = Executors.newCachedThreadPool()
+    // bounded pool: never create unlimited threads (that crashes the process -> internet blackout)
+    private val pool = ThreadPoolExecutor(0, 900, 30L, TimeUnit.SECONDS, SynchronousQueue<Runnable>())
+    @Volatile private var rejected = 0
+    private val handler = Handler(Looper.getMainLooper())
     private val tcpFlows = ConcurrentHashMap<String, TcpFlow>()
     private val udpFlows = ConcurrentHashMap<String, UdpFlow>()
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
     private val clientAddr: InetAddress = InetAddress.getByName(CLIENT_IP)
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopVpn(); return START_NOT_STICKY
+    private fun runAsync(r: Runnable): Boolean = try {
+        pool.execute(r); true
+    } catch (_: RejectedExecutionException) {
+        rejected++; false
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        Plog.init(this)
+        if (!crashHook) {
+            crashHook = true
+            val old = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { t, e ->
+                Plog.w("CRASH in ${t.name}: $e | " + e.stackTrace.take(8).joinToString(" <- "))
+                old?.uncaughtException(t, e)
+            }
         }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Plog.w("onStartCommand action=${intent?.action} running=$running")
+        if (intent?.action == ACTION_STOP) {
+            stopVpn("user"); return START_NOT_STICKY
+        }
+        wantRunning = true
         startVpn()
         return START_STICKY
     }
 
-    override fun onRevoke() { stopVpn() }
-    override fun onDestroy() { stopVpn(); super.onDestroy() }
+    override fun onRevoke() {
+        val authorized = try { VpnService.prepare(this) == null } catch (_: Exception) { false }
+        Plog.w("onRevoke authorized=$authorized want=$wantRunning")
+        closeTunnel()
+        // revoked by the system (e.g. always-on was toggled) while we are still authorized -> come back
+        if (authorized && wantRunning && canRestart()) handler.postDelayed({ startVpn() }, 800)
+        else stopVpn("revoked")
+    }
+
+    override fun onDestroy() {
+        Plog.w("onDestroy")
+        closeTunnel()
+        super.onDestroy()
+    }
+
+    private fun canRestart(): Boolean {
+        val now = System.currentTimeMillis()
+        restarts.removeAll { now - it > 120_000 }
+        if (restarts.size >= 6) return false
+        restarts.add(now)
+        return true
+    }
 
     private fun startVpn() {
-        if (running) return
+        if (running) { Plog.w("startVpn: already running"); return }
         goForeground()
         val b = Builder()
             .setSession("Payesh")
             .addAddress(CLIENT_IP, 32)
             .addRoute("0.0.0.0", 0)
-            // IPv6 is routed into the tunnel too, so it cannot bypass monitoring (it is refused -> apps fall back to IPv4)
+            // IPv6 is routed into the tunnel too, so it cannot bypass monitoring (apps fall back to IPv4)
             .addAddress("fd00:8::2", 128)
             .addRoute("::", 0)
             .addDnsServer("1.1.1.1")
@@ -78,44 +153,90 @@ class PayeshVpnService : VpnService() {
             .setMtu(MTU)
             .setBlocking(true)
         try { b.addDisallowedApplication(packageName) } catch (_: Exception) {}
-        val fd = b.establish() ?: return
+        val fd = try { b.establish() } catch (e: Exception) { Plog.w("establish failed: $e"); null }
+        if (fd == null) {
+            Plog.w("establish returned null")
+            Tracker.running.value = false
+            if (wantRunning && canRestart()) handler.postDelayed({ startVpn() }, 2000)
+            return
+        }
         tun = fd
         out = FileOutputStream(fd.fileDescriptor)
         running = true
         Tracker.clear()
         Tracker.running.value = true
+        Tracker.sessionStart = System.currentTimeMillis()
+        Plog.w("VPN established")
+        var round = 0
         flusher = Executors.newSingleThreadScheduledExecutor().also {
-            it.scheduleWithFixedDelay({ History.flush(applicationContext) }, 30, 30, TimeUnit.SECONDS)
+            it.scheduleWithFixedDelay({
+                try {
+                    History.flush(applicationContext)
+                    reap()
+                    if (++round % 2 == 0) logStats()
+                } catch (_: Exception) {
+                }
+            }, 30, 30, TimeUnit.SECONDS)
         }
         thread(name = "payesh-tun", isDaemon = true) {
-            val input = FileInputStream(fd.fileDescriptor)
-            val buf = ByteArray(32767)
+            var reason = "?"
             try {
-                while (running) {
+                val input = FileInputStream(fd.fileDescriptor)
+                val buf = ByteArray(32767)
+                while (running && tun === fd) {
                     val n = input.read(buf)
-                    if (n < 0) break
+                    if (n < 0) { reason = "EOF"; break }
                     if (n > 0) try { handle(buf, n) } catch (_: Exception) {}
                 }
-            } catch (_: Exception) {
-            } finally {
-                if (running) stopVpn()
+                if (reason == "?") reason = "stopped"
+            } catch (e: Exception) {
+                reason = "error: $e"
+            }
+            Plog.w("tun loop ended: $reason")
+            if (running && tun === fd) {
+                closeTunnel()
+                if (wantRunning && canRestart()) handler.postDelayed({ startVpn() }, 500)
+                else stopVpn("loop ended: $reason")
             }
         }
     }
 
-    private fun stopVpn() {
+    /** Closes the tunnel and all flows but keeps the service alive (so it can be re-established). */
+    private fun closeTunnel() {
         if (!running && tun == null) { Tracker.running.value = false; return }
         running = false
-        Tracker.running.value = false
         flusher?.shutdownNow()
         flusher = null
-        History.flush(applicationContext)
+        try { History.flush(applicationContext) } catch (_: Exception) {}
         tcpFlows.values.toList().forEach { it.doClose() }
         udpFlows.values.toList().forEach { it.close() }
         try { tun?.close() } catch (_: Exception) {}
         tun = null
+        Tracker.running.value = false
+    }
+
+    private fun stopVpn(reason: String) {
+        Plog.w("stopVpn: $reason")
+        wantRunning = false
+        closeTunnel()
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopSelf()
+    }
+
+    private fun reap() {
+        val now = System.currentTimeMillis()
+        tcpFlows.values.toList().forEach { if (now - it.lastAct > 600_000) it.reset() }
+        udpFlows.values.toList().forEach { if (now - it.lastAct > 90_000) it.close() }
+        val extra = udpFlows.size - 400
+        if (extra > 0) udpFlows.values.sortedBy { it.lastAct }.take(extra).forEach { it.close() }
+    }
+
+    private fun logStats() {
+        val rt = Runtime.getRuntime()
+        Plog.w(
+            "stats tcp=${tcpFlows.size} udp=${udpFlows.size} threads=${Thread.activeCount()} " +
+                "rejected=$rejected mem=${(rt.totalMemory() - rt.freeMemory()) / 1048576}MB"
+        )
     }
 
     private fun writeTun(p: ByteArray) {
@@ -152,6 +273,55 @@ class PayeshVpnService : VpnService() {
                 .build()
             if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             else startForeground(1, n)
+        } catch (e: Exception) {
+            Plog.w("startForeground failed: $e")
+        }
+    }
+
+    // ---------------------------------------------------------------- packet dispatch
+
+    private fun handle(buf: ByteArray, n: Int) {
+        val ver = buf[0].toInt() shr 4
+        if (ver == 6) { handle6(buf, n); return }
+        if (n < 20 || ver != 4) return
+        val ihl = (buf[0].toInt() and 0x0f) * 4
+        val total = minOf(Pkt.u16(buf, 2), n)
+        val proto = buf[9].toInt() and 0xff
+        val cli = buf.copyOfRange(12, 16)
+        val rem = buf.copyOfRange(16, 20)
+        when (proto) {
+            6 -> handleTcp(buf, ihl, total, cli, rem)
+            17 -> handleUdp(buf, ihl, total, cli, rem)
+            1 -> handleIcmp(buf, ihl, total, cli, rem)
+        }
+    }
+
+    private val pingSlots = Semaphore(6)
+
+    /** ICMP echo (ping): recorded and forwarded with the system ping tool. Android cannot tell which app sent it. */
+    private fun handleIcmp(buf: ByteArray, ihl: Int, total: Int, cli: ByteArray, rem: ByteArray) {
+        if (total < ihl + 8 || buf[ihl].toInt() != 8) return // echo requests only
+        val len = total - ihl
+        val msg = buf.copyOfRange(ihl, ihl + len)
+        val c = Tracker.conn(-1, "ICMP", Pkt.ip(rem), 0)
+        c.up.addAndGet(len.toLong()); c.touch()
+        if (!pingSlots.tryAcquire()) return
+        val ip = Pkt.ip(rem)
+        if (!runAsync(Runnable {
+                try { doPing(ip, msg, cli, rem, c) } finally { pingSlots.release() }
+            })) pingSlots.release()
+    }
+
+    private fun doPing(ip: String, msg: ByteArray, cli: ByteArray, rem: ByteArray, c: Conn) {
+        try {
+            val payload = (msg.size - 8).coerceIn(0, 1000)
+            val p = ProcessBuilder("ping", "-c", "1", "-W", "2", "-s", payload.toString(), ip)
+                .redirectErrorStream(true).start()
+            if (!p.waitFor(5, TimeUnit.SECONDS)) { p.destroy(); return }
+            if (p.exitValue() == 0) {
+                c.down.addAndGet(msg.size.toLong()); c.touch()
+                writeTun(Pkt.icmpReply(rem, cli, msg, 0, msg.size))
+            }
         } catch (_: Exception) {
         }
     }
@@ -177,23 +347,6 @@ class PayeshVpnService : VpnService() {
                 val seq = Pkt.u32(buf, 44)
                 writeTun(Pkt.tcp6Rst(dst, src, dp, sp, 0, (seq + 1) and Pkt.MASK, Pkt.RST or Pkt.ACK))
             }
-        }
-    }
-
-    // ---------------------------------------------------------------- packet dispatch
-
-    private fun handle(buf: ByteArray, n: Int) {
-        val ver = buf[0].toInt() shr 4
-        if (ver == 6) { handle6(buf, n); return }
-        if (n < 20 || ver != 4) return
-        val ihl = (buf[0].toInt() and 0x0f) * 4
-        val total = minOf(Pkt.u16(buf, 2), n)
-        val proto = buf[9].toInt() and 0xff
-        val cli = buf.copyOfRange(12, 16)
-        val rem = buf.copyOfRange(16, 20)
-        when (proto) {
-            6 -> handleTcp(buf, ihl, total, cli, rem)
-            17 -> handleUdp(buf, ihl, total, cli, rem)
         }
     }
 
@@ -254,17 +407,22 @@ class PayeshVpnService : VpnService() {
         private var conn: Conn? = null
         private val ds = DatagramSocket()
         @Volatile private var closed = false
+        @Volatile var lastAct = System.currentTimeMillis()
 
         init {
             protect(ds)
             val uid = owner(OsConstants.IPPROTO_UDP, sp, rem, dp)
             conn = Tracker.conn(uid, "UDP", remStr, dp)
             ds.connect(InetAddress.getByAddress(rem), dp)
-            ds.soTimeout = if (dp == 53) 8000 else 30000
-            pool.execute { receiveLoop() }
+            ds.soTimeout = if (dp == 53) 5000 else 20000
+            if (!runAsync(Runnable { receiveLoop() })) {
+                try { ds.close() } catch (_: Exception) {}
+                throw RejectedExecutionException("pool full")
+            }
         }
 
         fun send(d: ByteArray, off: Int, len: Int) {
+            lastAct = System.currentTimeMillis()
             try {
                 ds.send(DatagramPacket(d, off, len))
                 conn?.let { it.up.addAndGet(len.toLong()); it.touch() }
@@ -273,11 +431,12 @@ class PayeshVpnService : VpnService() {
         }
 
         private fun receiveLoop() {
-            val buf = ByteArray(65535)
+            val buf = ByteArray(2048)
             try {
                 while (!closed) {
                     val p = DatagramPacket(buf, buf.size)
                     ds.receive(p)
+                    lastAct = System.currentTimeMillis()
                     if (dp == 53) Sniff.dns(buf.copyOf(p.length))
                     conn?.let { it.down.addAndGet(p.length.toLong()); it.touch() }
                     if (p.length <= MTU - 28) writeTun(Pkt.udp(rem, cli, dp, sp, buf, p.length))
@@ -300,7 +459,7 @@ class PayeshVpnService : VpnService() {
         private val remStr = Pkt.ip(rem)
         private val lock = ReentrantLock()
         private val cond = lock.newCondition()
-        private val writer = Executors.newSingleThreadExecutor()
+        private val writer = SerialExec { runAsync(it) }
         private var socket: Socket? = null
         private var conn: Conn? = null
         private var clientNext = 0L
@@ -308,6 +467,7 @@ class PayeshVpnService : VpnService() {
         private var acked = 0L
         private var window = 65535
         @Volatile private var closed = false
+        @Volatile var lastAct = System.currentTimeMillis()
         private var finSent = false
         private var clientFin = false
         private var acc = ByteArray(0)
@@ -323,10 +483,13 @@ class PayeshVpnService : VpnService() {
             clientNext = (isn + 1) and Pkt.MASK
             mySeq = Random.nextLong(1, 0x7fffffffL)
             acked = mySeq
-            pool.execute { run() }
+            if (!runAsync(Runnable { connectAndPump() })) {
+                lock.withLock { send(Pkt.RST or Pkt.ACK, 0, clientNext) }
+                doClose()
+            }
         }
 
-        private fun run() {
+        private fun connectAndPump() {
             val s = Socket()
             try {
                 val uid = owner(OsConstants.IPPROTO_TCP, sp, rem, dp, true)
@@ -357,6 +520,7 @@ class PayeshVpnService : VpnService() {
                     val n = inp.read(buf)
                     if (n < 0) break
                     if (n == 0) continue
+                    lastAct = System.currentTimeMillis()
                     lock.withLock {
                         var t = 0
                         while (!closed && ((mySeq - acked) and Pkt.MASK) >= window.toLong() && t < 600) {
@@ -383,6 +547,7 @@ class PayeshVpnService : VpnService() {
         }
 
         fun onPacket(flags: Int, seq: Long, ack: Long, win: Int, d: ByteArray, off: Int, len: Int) {
+            lastAct = System.currentTimeMillis()
             lock.withLock {
                 if (closed) return
                 if ((flags and Pkt.RST) != 0) { doClose(); return }
@@ -400,9 +565,9 @@ class PayeshVpnService : VpnService() {
                         conn?.let { it.up.addAndGet(len.toLong()); it.touch() }
                         inspect(data)
                         val s = socket
-                        if (s != null) writer.execute {
+                        if (s != null) writer.execute(Runnable {
                             try { s.getOutputStream().write(data) } catch (_: Exception) { reset() }
-                        }
+                        })
                         sendAck()
                     } else {
                         sendAck(); fin = false
@@ -413,7 +578,7 @@ class PayeshVpnService : VpnService() {
                     clientFin = true
                     sendAck()
                     val s = socket
-                    writer.execute { try { s?.shutdownOutput() } catch (_: Exception) {} }
+                    writer.execute(Runnable { try { s?.shutdownOutput() } catch (_: Exception) {} })
                     cond.signalAll()
                 }
             }
@@ -431,7 +596,7 @@ class PayeshVpnService : VpnService() {
             }
         }
 
-        private fun reset() {
+        fun reset() {
             lock.withLock { send(Pkt.RST or Pkt.ACK, mySeq, clientNext) }
             doClose()
         }
@@ -441,7 +606,7 @@ class PayeshVpnService : VpnService() {
                 if (closed) return
                 closed = true
                 try { socket?.close() } catch (_: Exception) {}
-                writer.shutdownNow()
+                writer.shutdown()
                 tcpFlows.remove(key)
                 cond.signalAll()
             }
