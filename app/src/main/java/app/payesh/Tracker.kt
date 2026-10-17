@@ -13,6 +13,8 @@ class Conn(val proto: String, val ip: String, val port: Int) {
     @Volatile var last = System.currentTimeMillis()
     @Volatile var prevDown = 0L
     @Volatile var rate = 0L // bytes/sec received
+    var fUp = 0L   // bytes already written to the history database
+    var fDown = 0L
 
     fun touch() { last = System.currentTimeMillis() }
     fun name(): String = domain ?: Tracker.dns[ip] ?: ip

@@ -86,142 +86,15 @@ fun portName(p: Int): String = when (p) {
 @Composable
 fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettings: () -> Unit) {
     val apps by vm.apps.collectAsState()
-    val granted by vm.usageGranted.collectAsState()
     val running by Tracker.running.collectAsState()
-    var filter by remember { mutableStateOf(Filter.ALL) }
-    var query by remember { mutableStateOf("") }
-    var showSearch by remember { mutableStateOf(false) }
-
-    val shown = apps.filter { a ->
-        (query.isBlank() || a.label.contains(query, true) || a.pkg.contains(query, true) ||
-            a.conns.any { it.dest.contains(query, true) }) &&
-            when (filter) {
-                Filter.ALL -> true
-                Filter.ACTIVE -> a.active
-                Filter.DL -> a.downloading
-                Filter.USER -> !a.system
-                Filter.SYS -> a.system
-                Filter.IDLE -> a.conns.isEmpty()
-            }
-    }
+    var page by remember { mutableStateOf(0) }
     val down = apps.sumOf { it.down }
     val up = apps.sumOf { it.up }
     val activeCount = apps.count { it.active }
 
     Box(Modifier.fillMaxSize().background(Bg)) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 110.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            item { TopBar(running) }
-            item {
-                Text(
-                    "رصد ترافیک\nبرنامه‌ها", color = Color.White, fontSize = 34.sp,
-                    fontWeight = FontWeight.Bold, lineHeight = 40.sp,
-                    modifier = Modifier.padding(vertical = 6.dp)
-                )
-            }
-            if (!granted) item {
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
-                        .border(1.dp, Accent.copy(alpha = .6f), RoundedCornerShape(20.dp))
-                        .clickable(onClick = onUsage).padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Rounded.Warning, null, tint = Accent)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "برای تشخیص پیش‌زمینه / پس‌زمینه، اینجا بزن و Usage access را فعال کن.",
-                        color = Color.White, fontSize = 12.sp
-                    )
-                }
-            }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(4.dp)
-                ) {
-                    listOf(Filter.ALL, Filter.ACTIVE, Filter.DL).forEach { f ->
-                        val sel = filter == f
-                        Box(
-                            Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
-                                .background(if (sel) Accent else Color.Transparent)
-                                .clickable { filter = f }.padding(vertical = 11.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                f.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                                color = if (sel) OnAccent else Muted
-                            )
-                        }
-                    }
-                }
-            }
-            item { SummaryCard(down, up, activeCount) }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
-                        .clickable(onClick = onVpnSettings).padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Rounded.Shield, null, tint = Accent)
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("رصد کامل و بدون فرار", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text(
-                            "اینجا بزن و برای «پایش» گزینه‌های «VPN همیشه روشن» و «مسدود کردن اتصال‌های بدون VPN» را فعال کن.",
-                            color = Muted, fontSize = 11.sp
-                        )
-                    }
-                }
-            }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(listOf(Filter.USER, Filter.SYS, Filter.IDLE)) { f ->
-                        val sel = filter == f
-                        Text(
-                            f.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            color = if (sel) OnAccent else Color.White,
-                            modifier = Modifier.clip(RoundedCornerShape(16.dp))
-                                .background(if (sel) Accent else CardBg)
-                                .clickable { filter = if (sel) Filter.ALL else f }
-                                .padding(horizontal = 18.dp, vertical = 12.dp)
-                        )
-                    }
-                }
-            }
-            item {
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "برنامه‌ها (${shown.size})", color = Color.White, fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)
-                    )
-                    Row(
-                        Modifier.clip(RoundedCornerShape(14.dp)).background(CardBg)
-                            .clickable { showSearch = !showSearch }.padding(horizontal = 14.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Rounded.Search, null, tint = Accent, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("جستجو", color = Color.White, fontSize = 13.sp)
-                    }
-                }
-            }
-            if (showSearch) item {
-                OutlinedTextField(
-                    value = query, onValueChange = { query = it }, singleLine = true,
-                    placeholder = { Text("نام برنامه یا سایت…", color = Muted) },
-                    shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (!running && apps.all { it.conns.isEmpty() }) item {
-                Text(
-                    "رصد خاموش است. «شروع رصد» پایین صفحه را بزن تا ترافیک برنامه‌ها نمایش داده شود.",
-                    color = Muted, fontSize = 13.sp
-                )
-            }
-            items(shown, key = { it.uid }) { a -> AppRow(a, running) }
-        }
+        if (page == 0) LiveScreen(vm, apps, running, page, { page = it }, onUsage, onVpnSettings)
+        else HistoryScreen(page) { page = it }
 
         // Bottom bar (like the "Buy Ticket" bar in the reference)
         Row(
@@ -254,6 +127,165 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
                 )
             }
         }
+    }
+}
+
+@Composable
+fun PageSwitch(page: Int, onPage: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(4.dp)) {
+        listOf("زنده", "تاریخچه (دیتابیس)").forEachIndexed { i, t ->
+            val sel = page == i
+            Box(
+                Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                    .background(if (sel) Accent else Color.Transparent)
+                    .clickable { onPage(i) }.padding(vertical = 11.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(t, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (sel) OnAccent else Muted)
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveScreen(
+    vm: MainVM, apps: List<AppUi>, running: Boolean, page: Int, onPage: (Int) -> Unit,
+    onUsage: () -> Unit, onVpnSettings: () -> Unit
+) {
+    val granted by vm.usageGranted.collectAsState()
+    var filter by remember { mutableStateOf(Filter.ALL) }
+    var query by remember { mutableStateOf("") }
+    var showSearch by remember { mutableStateOf(false) }
+
+    val shown = apps.filter { a ->
+        (query.isBlank() || a.label.contains(query, true) || a.pkg.contains(query, true) ||
+            a.conns.any { it.dest.contains(query, true) }) &&
+            when (filter) {
+                Filter.ALL -> true
+                Filter.ACTIVE -> a.active
+                Filter.DL -> a.downloading
+                Filter.USER -> !a.system
+                Filter.SYS -> a.system
+                Filter.IDLE -> a.conns.isEmpty()
+            }
+    }
+    val down = apps.sumOf { it.down }
+    val up = apps.sumOf { it.up }
+    val activeCount = apps.count { it.active }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 110.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { TopBar(running) }
+        item {
+            Text(
+                "رصد ترافیک\nبرنامه‌ها", color = Color.White, fontSize = 34.sp,
+                fontWeight = FontWeight.Bold, lineHeight = 40.sp,
+                modifier = Modifier.padding(vertical = 6.dp)
+            )
+        }
+        item { PageSwitch(page, onPage) }
+        if (!granted) item {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                    .border(1.dp, Accent.copy(alpha = .6f), RoundedCornerShape(20.dp))
+                    .clickable(onClick = onUsage).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Warning, null, tint = Accent)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "برای تشخیص پیش‌زمینه / پس‌زمینه، اینجا بزن و Usage access را فعال کن.",
+                    color = Color.White, fontSize = 12.sp
+                )
+            }
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(4.dp)
+            ) {
+                listOf(Filter.ALL, Filter.ACTIVE, Filter.DL).forEach { f ->
+                    val sel = filter == f
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                            .background(if (sel) Accent else Color.Transparent)
+                            .clickable { filter = f }.padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            f.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            color = if (sel) OnAccent else Muted
+                        )
+                    }
+                }
+            }
+        }
+        item { SummaryCard(down, up, activeCount) }
+        item {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
+                    .clickable(onClick = onVpnSettings).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Shield, null, tint = Accent)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("رصد کامل و بدون فرار", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        "اینجا بزن و برای «پایش» گزینه‌های «VPN همیشه روشن» و «مسدود کردن اتصال‌های بدون VPN» را فعال کن.",
+                        color = Muted, fontSize = 11.sp
+                    )
+                }
+            }
+        }
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf(Filter.USER, Filter.SYS, Filter.IDLE)) { f ->
+                    val sel = filter == f
+                    Text(
+                        f.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = if (sel) OnAccent else Color.White,
+                        modifier = Modifier.clip(RoundedCornerShape(16.dp))
+                            .background(if (sel) Accent else CardBg)
+                            .clickable { filter = if (sel) Filter.ALL else f }
+                            .padding(horizontal = 18.dp, vertical = 12.dp)
+                    )
+                }
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "برنامه‌ها (${shown.size})", color = Color.White, fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)
+                )
+                Row(
+                    Modifier.clip(RoundedCornerShape(14.dp)).background(CardBg)
+                        .clickable { showSearch = !showSearch }.padding(horizontal = 14.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Search, null, tint = Accent, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("جستجو", color = Color.White, fontSize = 13.sp)
+                }
+            }
+        }
+        if (showSearch) item {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it }, singleLine = true,
+                placeholder = { Text("نام برنامه یا سایت…", color = Muted) },
+                shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (!running && apps.all { it.conns.isEmpty() }) item {
+            Text(
+                "رصد خاموش است. «شروع رصد» پایین صفحه را بزن تا ترافیک برنامه‌ها نمایش داده شود.",
+                color = Muted, fontSize = 13.sp
+            )
+        }
+        items(shown, key = { it.uid }) { a -> AppRow(a, running) }
     }
 }
 

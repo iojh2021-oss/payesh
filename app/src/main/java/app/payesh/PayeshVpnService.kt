@@ -21,6 +21,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
@@ -41,6 +42,7 @@ class PayeshVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
+    private var flusher: ScheduledExecutorService? = null
     @Volatile private var running = false
     private lateinit var out: FileOutputStream
     private val outLock = Any()
@@ -82,6 +84,9 @@ class PayeshVpnService : VpnService() {
         running = true
         Tracker.clear()
         Tracker.running.value = true
+        flusher = Executors.newSingleThreadScheduledExecutor().also {
+            it.scheduleWithFixedDelay({ History.flush(applicationContext) }, 30, 30, TimeUnit.SECONDS)
+        }
         thread(name = "payesh-tun", isDaemon = true) {
             val input = FileInputStream(fd.fileDescriptor)
             val buf = ByteArray(32767)
@@ -102,6 +107,9 @@ class PayeshVpnService : VpnService() {
         if (!running && tun == null) { Tracker.running.value = false; return }
         running = false
         Tracker.running.value = false
+        flusher?.shutdownNow()
+        flusher = null
+        History.flush(applicationContext)
         tcpFlows.values.toList().forEach { it.doClose() }
         udpFlows.values.toList().forEach { it.close() }
         try { tun?.close() } catch (_: Exception) {}
