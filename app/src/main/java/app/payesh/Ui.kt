@@ -6,6 +6,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -95,7 +97,8 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
     Box(Modifier.fillMaxSize().background(Bg)) {
         if (page == 0) LiveScreen(vm, apps, running, page, { page = it }, onUsage, onVpnSettings)
         else if (page == 1) HistoryScreen(page) { page = it }
-        else SysStatsScreen(page) { page = it }
+        else if (page == 2) SysStatsScreen(page) { page = it }
+        else CleanerScreen(page) { page = it }
 
         // Bottom bar (like the "Buy Ticket" bar in the reference)
         Row(
@@ -133,13 +136,17 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
 
 @Composable
 fun PageSwitch(page: Int, onPage: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(4.dp)) {
-        listOf("زنده", "تاریخچه", "آمار سیستم").forEachIndexed { i, t ->
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
+            .horizontalScroll(rememberScrollState()).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        listOf("زنده", "تاریخچه", "آمار سیستم", "پاکسازی").forEachIndexed { i, t ->
             val sel = page == i
             Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                Modifier.clip(RoundedCornerShape(16.dp))
                     .background(if (sel) Accent else Color.Transparent)
-                    .clickable { onPage(i) }.padding(vertical = 11.dp),
+                    .clickable { onPage(i) }.padding(horizontal = 18.dp, vertical = 11.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(t, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (sel) OnAccent else Muted)
