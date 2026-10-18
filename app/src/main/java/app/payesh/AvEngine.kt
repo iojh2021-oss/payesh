@@ -45,7 +45,8 @@ class AvEnv(val ctx: Context) {
     } catch (_: Exception) { emptySet() }
     val smsDefault: String? = try { Telephony.Sms.getDefaultSmsPackage(ctx) } catch (_: Exception) { null }
     val trusted: Set<String> = AvPrefs.trusted(ctx)
-    val sigs: Map<String, String> = AvPrefs.signatures(ctx)
+    val db: AvDb = AvDbStore.load(ctx)
+    val sigs: Map<String, String> = AvPrefs.signatures(ctx) + db.hashes
 
     private fun enabledPkgs(key: String): Set<String> {
         val raw = try { Settings.Secure.getString(ctx.contentResolver, key) } catch (_: Exception) { null } ?: ""
@@ -157,6 +158,12 @@ object Av {
         } == true
     } catch (_: Exception) { false }
 
+    private fun certHashes(pi: PackageInfo): List<String> = try {
+        val si = pi.signingInfo
+        val signers = if (si == null) null else if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+        signers?.map { s -> MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) } } ?: emptyList()
+    } catch (_: Exception) { emptyList() }
+
     private fun hasPayload(apkPath: String): Boolean = try {
         ZipFile(apkPath).use { z ->
             val e = z.entries()
@@ -216,27 +223,50 @@ object Av {
         val spy = perms.count { it in SPY }
         if (spy >= 5 && sideloaded) add(15, "درخواست بیش‌ازحد دسترسی‌های حساس ($spy مورد)")
         if (sideloaded) add(8, "از فروشگاه معتبر نصب نشده (نصب دستی / منبع ناشناس)")
-        if (sideloaded && pkg != env.self && debugSigned(pi)) add(12, "با گواهی Debug اندروید امضا شده (برنامهٔ منتشرنشده یا دستکاری‌شده)")
+        val dbg = sideloaded && pkg != env.self && debugSigned(pi)
+        if (dbg) add(12, "با گواهی Debug اندروید امضا شده (برنامهٔ منتشرنشده یا دستکاری‌شده)")
         if (sideloaded && ai != null && ai.targetSdkVersion < 23) add(10, "targetSdk قدیمی (کمتر از ۲۳): مجوزها بدون پرسش داده می‌شود؛ ترفند رایج بدافزار")
         if (!system && !fromStore && (pkg.startsWith("com.google.") || pkg.startsWith("com.android.") || pkg.startsWith("com.samsung.")))
             add(20, "نام پکیج شبیه برنامه‌های گوگل/سیستمی است ولی از منبع معتبر نیامده (جعل هویت)")
 
         var sha: String? = null
-        if (!system && ai != null && (hashAll || sideloaded)) {
+        var payload = false
+        if (ai != null && (hashAll || sideloaded)) {
             val path = ai.sourceDir
             if (path != null) {
                 sha = sha256(File(path))
-                if (sideloaded && hasPayload(path)) add(20, "فایل اجرایی یا APK داخل بستهٔ برنامه تعبیه شده (Payload)")
+                if (sideloaded && hasPayload(path)) { payload = true; add(20, "فایل اجرایی یا APK داخل بستهٔ برنامه تعبیه شده (Payload)") }
             }
         }
         if (installed && sideloaded && score >= 25 && System.currentTimeMillis() - pi.firstInstallTime < 48 * 3_600_000L)
             add(5, "تازه (کمتر از ۴۸ ساعت) نصب شده")
+
+        // dynamic (over-the-air) database: package / certificate blacklists + declarative behavior rules
+        var forced = false
+        env.db.pkgs[pkg]?.let { forced = true; add(100, "پکیج در فهرست بدافزار پایگاه تهدیدها: $it") }
+        if (env.db.certs.isNotEmpty()) {
+            val bad = certHashes(pi).firstNotNullOfOrNull { env.db.certs[it] }
+            if (bad != null) { forced = true; add(100, "گواهی امضا در فهرست سیاه پایگاه تهدیدها: $bad") }
+        }
+        if (env.db.rules.isNotEmpty()) {
+            val feat = HashSet<String>()
+            fun f(c: Boolean, n: String) { if (c) feat.add(n) }
+            f(a11yOn, "a11y_on"); f(a11yDecl, "a11y_decl"); f(adminOn, "admin_on"); f(adminDecl, "admin_decl")
+            f(notifOn, "notif_on"); f(notifDecl, "notif_decl"); f(overlayOn, "overlay_on"); f(hidden, "hidden")
+            f(sideloaded, "sideloaded"); f(fromStore, "from_store"); f(system, "system"); f(hasNet, "net")
+            f(installPerm, "install_perm"); f(sms > 0, "sms_any"); f(sms > 0 && pkg != env.smsDefault, "sms_not_default")
+            f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many")
+            f(sideloaded && ai != null && ai.targetSdkVersion < 23, "old_target")
+            for (pn in perms) feat.add("perm:" + pn.substringAfterLast('.'))
+            for (r in env.db.rules) if (r.matches(feat)) add(r.score, "قانون پایگاه تهدیدها: ${r.name}")
+        }
 
         var s = score
         if (fromStore) s = (s * 0.6).toInt()
         if (system) s = (s * 0.35).toInt()
         val sigName = sha?.let { env.sigs[it] }
         if (sigName != null) { s = 100; reasons.add(0, "مطابقت با پایگاه امضای بدافزار: $sigName") }
+        if (forced) s = 100
         s = s.coerceIn(0, 100)
         return Finding(pkg, 0, label, pkg, s, level(s), reasons, pkg = pkg, sha = sha, side = sideloaded)
     }

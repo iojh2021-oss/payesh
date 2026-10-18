@@ -156,6 +156,7 @@ object AvState {
         if (enabled.value) startGuard(app)
         scope.launch {
             try { posture.value = Av.posture(app, AvEnv(app)) } catch (_: Exception) {}
+            try { AvDbStore.updateIfDue(app) } catch (_: Exception) {}
         }
     }
 

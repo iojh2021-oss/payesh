@@ -1,0 +1,36 @@
+name: Update AV database
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: Checkout data branch
+        run: |
+          URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          if git ls-remote --exit-code --heads "$URL" av-db >/dev/null 2>&1; then
+            git clone --depth 1 --branch av-db "$URL" db
+          else
+            mkdir db && cd db && git init -q -b av-db && git remote add origin "$URL"
+          fi
+      - name: Build database
+        env:
+          ABUSECH_AUTH_KEY: ${{ secrets.ABUSECH_AUTH_KEY }}
+        run: python3 src/av-db/build_db.py src/av-db/custom.json db/av-db.json
+      - name: Publish
+        run: |
+          cd db
+          git add -A
+          if ! git diff --cached --quiet; then
+            git config user.name "payesh-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git commit -m "Update AV database"
+            git push origin HEAD:av-db
+          fi

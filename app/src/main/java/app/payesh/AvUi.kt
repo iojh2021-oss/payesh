@@ -45,6 +45,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,6 +66,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val Danger = Color(0xFFFF5A5F)
 
@@ -186,6 +189,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         }
         items(posture, key = { it.title }) { p -> PostureRow(p) }
 
+        item { DbCard(ctx) }
         item { CloudCard(ctx) }
         item { SigCard(ctx) }
         item {
@@ -451,5 +455,52 @@ fun SigCard(ctx: Context) {
         Spacer(Modifier.height(10.dp))
         AvBtn("افزودن فهرست هش", false, Accent, Modifier.fillMaxWidth()) { picker.launch(arrayOf("*/*")) }
         if (msg != null) Text(msg ?: "", color = Accent, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable
+fun DbCard(ctx: Context) {
+    val info by AvDbStore.info.collectAsState()
+    val busy by AvDbStore.busy.collectAsState()
+    val msg by AvDbStore.message.collectAsState()
+    var auto by remember { mutableStateOf(AvDbStore.auto(ctx)) }
+    var url by remember { mutableStateOf(AvDbStore.url(ctx)) }
+    LaunchedEffect(Unit) { withContext(Dispatchers.IO) { AvDbStore.load(ctx) } }
+    val last = info.lastCheck
+    val ago = if (last == 0L) "هنوز بررسی نشده" else {
+        val m = (System.currentTimeMillis() - last) / 60_000
+        if (m < 60) "$m دقیقه پیش" else "${m / 60} ساعت پیش"
+    }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("پایگاه تهدیدها (بروزرسانی بدون بیلد)", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    "نسخهٔ ${info.version}" + (if (info.updated.isNotEmpty()) " • ${info.updated}" else "") + " • آخرین بررسی: $ago",
+                    color = Muted, fontSize = 11.sp
+                )
+                Text(
+                    "${info.hashes} هش • ${info.pkgs} پکیج • ${info.certs} گواهی • ${info.rules} قانون رفتاری",
+                    color = Accent, fontSize = 11.sp
+                )
+            }
+            Toggle(auto) { auto = it; AvDbStore.setAuto(ctx, it) }
+        }
+        Text(
+            if (auto) "هر ۶ ساعت یک‌بار خودکار بروزرسانی می‌شود (هش بدافزارها، فهرست سیاه پکیج و گواهی، و قوانین رفتاری جدید)."
+            else "بروزرسانی خودکار خاموش است.",
+            color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        AvBtn(if (busy) "در حال بروزرسانی…" else "بروزرسانی الان", true, Accent, Modifier.fillMaxWidth()) {
+            AvDbStore.updateAsync(ctx)
+        }
+        if (msg != null) Text(msg ?: "", color = Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = url, onValueChange = { url = it; AvDbStore.setUrl(ctx, it) }, singleLine = true,
+            label = { Text("منبع بروزرسانی (https)", color = Muted) },
+            shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
+        )
     }
 }

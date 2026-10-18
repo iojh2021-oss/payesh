@@ -1,6 +1,17 @@
 package app.payesh
 
+import android.content.ClipData
+import android.content.ContentValues
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -49,6 +60,7 @@ private const val BG_MIN = 1_048_576L
 /** Service log, to find out why the VPN stopped. */
 @Composable
 fun LogCard() {
+    val ctx = LocalContext.current
     var open by remember { mutableStateOf(false) }
     var lines by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(open) {
@@ -64,6 +76,12 @@ fun LogCard() {
             modifier = Modifier.fillMaxWidth().clickable { open = !open }
         )
         if (open) {
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AvBtn("کپی گزارش", false, Accent, Modifier.weight(1f)) { copyReport(ctx) }
+                AvBtn("ذخیره فایل", false, Accent, Modifier.weight(1f)) { saveReport(ctx) }
+                AvBtn("ارسال", true, Accent, Modifier.weight(1f)) { shareReport(ctx) }
+            }
             Spacer(Modifier.height(8.dp))
             if (lines.isEmpty()) Text("هنوز چیزی ثبت نشده.", color = Muted, fontSize = 11.sp)
             lines.forEach {
@@ -245,5 +263,55 @@ fun SysStatsScreen(page: Int, onPage: (Int) -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** Full diagnostic report: device/app state header + the latest log lines. */
+private fun reportText(ctx: Context): String {
+    val ver = try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { "?" }
+    val sb = StringBuilder()
+    sb.append("Payesh v$ver | Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) | ${Build.MANUFACTURER} ${Build.MODEL}\n")
+    sb.append("VPN running=${Tracker.running.value} usageAccess=${Fg.granted(ctx)} allFiles=${Dedup.hasAccess(ctx)}\n")
+    sb.append("AV guard=${AvState.enabled.value} db=v${AvDbStore.info.value.version} score=${AvState.score.value}\n")
+    sb.append("---\n")
+    Plog.tail(120).forEach { sb.append(it).append('\n') }
+    return sb.toString()
+}
+
+private fun copyReport(ctx: Context) {
+    try {
+        ctx.getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("payesh-log", reportText(ctx)))
+        Toast.makeText(ctx, "گزارش کپی شد", Toast.LENGTH_SHORT).show()
+    } catch (_: Exception) {
+    }
+}
+
+private fun shareReport(ctx: Context) {
+    try {
+        val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, reportText(ctx))
+        ctx.startActivity(Intent.createChooser(i, "ارسال گزارش").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: Exception) {
+    }
+}
+
+/** Saves the report as a .txt file in the Downloads folder (no permission needed). */
+private fun saveReport(ctx: Context) {
+    try {
+        val name = "payesh-report-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".txt"
+        val cv = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        }
+        val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+        if (uri == null) {
+            Toast.makeText(ctx, "ذخیرهٔ فایل ممکن نشد", Toast.LENGTH_LONG).show()
+            return
+        }
+        ctx.contentResolver.openOutputStream(uri)?.use { it.write(reportText(ctx).toByteArray()) }
+        Toast.makeText(ctx, "ذخیره شد: Download/$name", Toast.LENGTH_LONG).show()
+    } catch (_: Exception) {
+        Toast.makeText(ctx, "ذخیرهٔ فایل ممکن نشد", Toast.LENGTH_LONG).show()
     }
 }

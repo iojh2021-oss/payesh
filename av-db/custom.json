@@ -1,0 +1,23 @@
+{
+  "hashes": {},
+  "packages": {},
+  "certs": {},
+  "rules": [
+    {"id": "banker.overlay", "name": "الگوی تروجان بانکی: Overlay + Accessibility", "score": 25,
+     "all": ["overlay_on", "a11y_on"], "any": ["sms_any", "perm:RECEIVE_SMS", "perm:READ_SMS"], "none": ["from_store", "system"]},
+    {"id": "sms.stealer", "name": "سارق پیامک: پیامک بدون پیش‌فرض بودن + شنود اعلان/Accessibility", "score": 25,
+     "all": ["sms_any", "sms_not_default", "sideloaded"], "any": ["notif_on", "a11y_on", "hidden"], "none": ["system"]},
+    {"id": "stalkerware", "name": "الگوی استاکرویر: پنهان + دسترسی‌های حساس + دسترسی ویژه", "score": 25,
+     "all": ["hidden", "spy_many"], "any": ["a11y_on", "admin_on", "a11y_decl"], "none": ["system"]},
+    {"id": "dropper", "name": "الگوی Dropper: نصب‌کنندهٔ برنامه با Payload تعبیه‌شده", "score": 25,
+     "all": ["install_perm", "sideloaded", "payload"], "none": ["system"]},
+    {"id": "rat.a11y", "name": "ابزار دسترسی از راه دور: Accessibility فعال + میکروفون/دوربین/مخاطبین", "score": 20,
+     "all": ["a11y_on", "net", "sideloaded"], "any": ["perm:RECORD_AUDIO", "perm:CAMERA", "perm:READ_CONTACTS"], "none": ["system"]},
+    {"id": "ransom.admin", "name": "الگوی باج‌افزار: مدیر دستگاه + نمایش روی صفحه", "score": 20,
+     "all": ["admin_on", "sideloaded"], "any": ["perm:SYSTEM_ALERT_WINDOW", "perm:WRITE_EXTERNAL_STORAGE"], "none": ["system"]},
+    {"id": "otp.listener", "name": "شنود کد یک‌بارمصرف: دسترسی اعلان‌ها + پیامک", "score": 20,
+     "all": ["notif_on", "sms_any", "sideloaded"], "none": ["system"]},
+    {"id": "adware.hidden", "name": "الگوی ادویر: پنهان + اینترنت + اجرا هنگام روشن شدن", "score": 15,
+     "all": ["sideloaded", "hidden", "net"], "any": ["perm:SYSTEM_ALERT_WINDOW", "perm:RECEIVE_BOOT_COMPLETED"], "none": ["system"]}
+  ]
+}

@@ -80,6 +80,7 @@ class GuardService : Service() {
             it.scheduleWithFixedDelay({
                 try {
                     tick++
+                    if (tick == 1 || tick % 360 == 0) AvDbStore.updateIfDue(this)
                     if (tick % 2 == 0) scanNewFiles()
                     if (tick % 5 == 0) behaviorCheck()
                 } catch (e: Exception) {
