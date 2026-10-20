@@ -66,7 +66,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.NotificationManager
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private val Danger = Color(0xFFFF5A5F)
@@ -137,6 +140,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
                 onCancel = { AvState.cancelScan() }
             )
         }
+        item { GuardCard(ctx) }
         item {
             val last = counts.lastScan
             val ago = if (last == 0L) "—" else {
@@ -516,5 +520,73 @@ fun DbCard(ctx: Context) {
             label = { Text("آدرس پایهٔ پایگاه (https)", color = Muted) },
             shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+@Composable
+private fun CheckRow(ok: Boolean, text: String, onFix: (() -> Unit)?) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+            .then(if (!ok && onFix != null) Modifier.clickable { onFix() } else Modifier).padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(if (ok) Icons.Rounded.Check else Icons.Rounded.Warning, null, tint = if (ok) Accent else Orange, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = if (ok) Color.White else Orange, fontSize = 12.sp)
+    }
+}
+
+/** Real-time protection: what is being watched, prerequisites, and the "ask before scan" switch. */
+@Composable
+fun GuardCard(ctx: Context) {
+    val enabled by AvState.enabled.collectAsState()
+    val watched by AvGuardState.watched.collectAsState()
+    val last by AvGuardState.last.collectAsState()
+    var ask by remember { mutableStateOf(AvPrefs.askBeforeScan(ctx)) }
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { delay(2000); tick++ } }
+    val files = remember(tick) { Dedup.hasAccess(ctx) }
+    val usage = remember(tick) { Fg.granted(ctx) }
+    val notif = remember(tick) { try { ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled() } catch (_: Exception) { true } }
+
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Text("محافظت لحظه‌ای: وضعیت و پیش‌نیازها", color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+            if (enabled) "فعال: هر نصبِ غیر Google Play اعلان می‌دهد، APK دانلودی فوراً شناسایی می‌شود، و هنگام باز شدن نصب‌کننده یادآوری می‌کند."
+            else "خاموش است؛ کلید «محافظت لحظه‌ای» بالا را روشن کن.",
+            color = if (enabled) Accent else Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+        CheckRow(notif, if (notif) "اعلان‌ها مجازند" else "اعلان‌ها خاموش‌اند؛ اینجا بزن و روشن کن") {
+            ctx.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+        CheckRow(files, if (files) "دسترسی همهٔ فایل‌ها: فعال ($watched پوشه تحت نظر)" else "برای شناسایی فوری دانلودها، دسترسی «همهٔ فایل‌ها» لازم است؛ اینجا بزن") {
+            if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+        CheckRow(usage, if (usage) "Usage access: فعال (تشخیص باز شدن نصب‌کننده)" else "برای تشخیص باز شدن صفحهٔ نصب، Usage access لازم است؛ اینجا بزن") {
+            ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("آخرین مورد بررسی‌شده: $last", color = Muted, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("پرسیدن قبل از اسکن APK دانلودی", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    if (ask) "بعد از دانلود اعلانی با «اسکن الان» می‌آید و فقط با اجازهٔ تو اسکن می‌شود."
+                    else "هر APK دانلودی بدون پرسش اسکن و نتیجه اعلام می‌شود.",
+                    color = Muted, fontSize = 11.sp
+                )
+            }
+            Toggle(ask) { ask = it; AvPrefs.setAskBeforeScan(ctx, it) }
+        }
     }
 }

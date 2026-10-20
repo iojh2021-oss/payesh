@@ -1,0 +1,180 @@
+package app.payesh
+
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.graphics.drawable.Icon
+import android.os.FileObserver
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
+
+/** Live status of the real-time guard, shown in the antivirus tab. */
+object AvGuardState {
+    val watched = MutableStateFlow(0)
+    val last = MutableStateFlow("—")
+}
+
+/**
+ * Instant detection of new files: one inotify watch per download-like folder (and its sub-folders).
+ * Fires when a file is completely written or renamed into place (e.g. Chrome's .crdownload -> .apk).
+ */
+class DownloadWatcher(private val onFile: (File) -> Unit) {
+    private val observers = HashMap<String, FileObserver>()
+    private val recent = HashMap<String, Long>()
+    private val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.CREATE
+
+    fun count() = observers.size
+
+    @Synchronized
+    fun start(roots: List<File>) {
+        for (r in roots) {
+            for (d in Av.SMART_DIRS) addTree(File(r, d), 4)
+            // files dropped straight into the storage root and into apps' own top-level folders (e.g. /sdcard/SomeApp)
+            addTree(r, 0)
+            r.listFiles()?.filter { it.isDirectory && it.name != "Android" && !it.name.startsWith(".") }?.forEach { addTree(it, 0) }
+        }
+        AvGuardState.watched.value = observers.size
+    }
+
+    @Synchronized
+    fun stop() {
+        observers.values.forEach { it.stopWatching() }
+        observers.clear()
+        AvGuardState.watched.value = 0
+    }
+
+    @Synchronized
+    private fun addTree(dir: File, depth: Int) {
+        if (!dir.isDirectory || observers.size >= 300 || dir.name in Av.SKIP_DIRS || dir.path in observers) return
+        val o = object : FileObserver(dir, mask) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path == null) return
+                val f = File(dir, path)
+                if (f.isDirectory) {
+                    if (depth > 0) addTree(f, depth - 1)
+                    AvGuardState.watched.value = observers.size
+                    return
+                }
+                if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
+                val now = System.currentTimeMillis()
+                synchronized(recent) {
+                    if ((recent[f.path] ?: 0L) > now - 3_000) return
+                    recent[f.path] = now
+                    if (recent.size > 500) recent.clear()
+                }
+                onFile(f)
+            }
+        }
+        o.startWatching()
+        observers[dir.path] = o
+        if (depth > 0) dir.listFiles()?.filter { it.isDirectory }?.forEach { addTree(it, depth - 1) }
+    }
+}
+
+object AvGuard {
+    const val ACT_SCAN = "app.payesh.G_SCAN"
+    const val ACT_DELETE = "app.payesh.G_DELETE"
+    const val ACT_QUAR = "app.payesh.G_QUAR"
+    const val ACT_IGNORE = "app.payesh.G_IGNORE"
+
+    /** path -> (finding or null when nothing suspicious, time) */
+    val results = ConcurrentHashMap<String, Pair<Finding?, Long>>()
+
+    fun nid(path: String) = (path.hashCode() and 0x7fffffff) + 100
+
+    fun action(ctx: Context, title: String, act: String, path: String, nid: Int): Notification.Action {
+        val i = Intent(ctx, GuardActionReceiver::class.java).setAction(act).putExtra("path", path).putExtra("nid", nid)
+        val pi = PendingIntent.getBroadcast(ctx, (act + path).hashCode(), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_notif), title, pi).build()
+    }
+
+    /** Ask the user before scanning a freshly downloaded APK (like AVG's download shield). */
+    fun askScan(ctx: Context, f: File, who: String?) {
+        val id = nid(f.path)
+        AvNotify.post(
+            ctx, id, "فایل APK دانلود شد؛ قبل از نصب اسکن شود؟",
+            "«${f.name}» (${fmt(f.length())})" + (who?.let { "\n$it" } ?: "") +
+                "\nبرای اسکن امن قبل از نصب، «اسکن الان» را بزن.",
+            true, listOf(action(ctx, "اسکن الان", ACT_SCAN, f.path, id), action(ctx, "نادیده", ACT_IGNORE, f.path, id))
+        )
+    }
+
+    /** Scan a file now and report: clean / suspicious / malicious with the reasons. */
+    fun scanAndNotify(ctx: Context, f: File, who: String?) {
+        if (!f.isFile) return
+        val r = try { Av.analyzeFile(AvEnv(ctx), f) } catch (_: Exception) { null }
+        results[f.path] = r to System.currentTimeMillis()
+        val id = nid(f.path)
+        val src = who?.let { "\n$it" } ?: ""
+        if (r == null || r.level == 0) {
+            AvNotify.post(
+                ctx, id, "✓ مورد مشکوکی پیدا نشد",
+                "«${f.name}» اسکن شد و طبق پایگاه تهدیدها و تحلیل رفتاری مشکوک نیست. این به معنای تضمین سالم بودن نیست.$src",
+                false
+            )
+        } else {
+            val head = if (r.level == 2) "⚠ فایل مخرب است؛ نصب نکن" else "⚠ فایل مشکوک است"
+            AvNotify.post(
+                ctx, id, head,
+                "«${r.title}» (ریسک ${r.score})\n" + r.reasons.take(5).joinToString("\n") { "• $it" } + src,
+                true, listOf(action(ctx, "حذف فایل", ACT_DELETE, f.path, id), action(ctx, "قرنطینه", ACT_QUAR, f.path, id))
+            )
+        }
+    }
+
+    /** Best guess which app downloaded something just now, from the VPN network monitor. */
+    fun guessDownloader(ctx: Context): String? {
+        if (!Tracker.running.value) return null
+        val now = System.currentTimeMillis()
+        var bestUid = Int.MIN_VALUE
+        var best = 0L
+        for (u in Tracker.uids.values) for (c in u.conns.values) {
+            if (now - c.last < 20_000 && c.down.get() >= 100_000 && c.down.get() > best) { best = c.down.get(); bestUid = u.uid }
+        }
+        if (bestUid == Int.MIN_VALUE) return null
+        val pm = ctx.packageManager
+        val pkg = try { pm.getPackagesForUid(bestUid)?.firstOrNull() } catch (_: Exception) { null } ?: return null
+        return try { pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString() } catch (_: Exception) { pkg }
+    }
+}
+
+/** Handles the buttons on guard notifications (scan now / delete / quarantine / ignore). */
+class GuardActionReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, i: Intent) {
+        val path = i.getStringExtra("path") ?: return
+        val nid = i.getIntExtra("nid", 0)
+        val act = i.action
+        val app = ctx.applicationContext
+        val pending = goAsync()
+        thread(name = "guard-action") {
+            try {
+                val nm = app.getSystemService(NotificationManager::class.java)
+                val f = File(path)
+                when (act) {
+                    AvGuard.ACT_SCAN -> { nm.cancel(nid); AvGuard.scanAndNotify(app, f, null) }
+                    AvGuard.ACT_IGNORE -> nm.cancel(nid)
+                    AvGuard.ACT_DELETE -> {
+                        val ok = f.delete()
+                        nm.cancel(nid)
+                        AvNotify.post(app, nid, if (ok) "فایل حذف شد" else "حذف فایل ناموفق بود", f.name, false)
+                    }
+                    AvGuard.ACT_QUAR -> {
+                        nm.cancel(nid)
+                        val fnd = Finding(path, 1, f.name, path, 0, 0, emptyList(), path = path)
+                        val ok = AvState.quarantineFile(app, fnd)
+                        AvNotify.post(app, nid, if (ok) "فایل به قرنطینه رفت" else "قرنطینهٔ فایل ناموفق بود", f.name + (if (ok) "\nاز تب آنتی‌ویروس می‌توانی بازگردانی یا حذف همیشگی کنی." else ""), false)
+                    }
+                }
+            } catch (e: Exception) {
+                Plog.w("guard action failed: $e")
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+}

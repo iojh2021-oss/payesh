@@ -40,6 +40,10 @@ object AvPrefs {
     fun enabled(ctx: Context) = p(ctx).getBoolean("enabled", false)
     fun setEnabled(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("enabled", v).apply()
 
+    /** Ask before scanning a freshly downloaded APK (default) instead of scanning automatically. */
+    fun askBeforeScan(ctx: Context) = p(ctx).getBoolean("ask_scan", true)
+    fun setAskBeforeScan(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ask_scan", v).apply()
+
     fun vtEnabled(ctx: Context) = p(ctx).getBoolean("vt_on", false)
     fun vtKey(ctx: Context) = p(ctx).getString("vt_key", "") ?: ""
     fun setVt(ctx: Context, on: Boolean, key: String) = p(ctx).edit().putBoolean("vt_on", on).putString("vt_key", key).apply()
@@ -117,20 +121,23 @@ object AvPrefs {
 }
 
 object AvNotify {
-    fun alert(ctx: Context, id: Int, title: String, text: String) {
+    /** high = heads-up alert channel, otherwise the quiet info channel. Actions are the buttons under the text. */
+    fun post(ctx: Context, id: Int, title: String, text: String, high: Boolean, actions: List<Notification.Action> = emptyList()) {
         try {
             val nm = ctx.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel("av_alerts", "هشدار آنتی‌ویروس", NotificationManager.IMPORTANCE_HIGH))
+            nm.createNotificationChannel(NotificationChannel("av_info", "اطلاعیه‌های آنتی‌ویروس", NotificationManager.IMPORTANCE_DEFAULT))
             val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-            nm.notify(
-                id,
-                Notification.Builder(ctx, "av_alerts").setSmallIcon(R.drawable.ic_notif).setContentTitle(title)
-                    .setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
-                    .setContentIntent(pi).setAutoCancel(true).build()
-            )
+            val b = Notification.Builder(ctx, if (high) "av_alerts" else "av_info")
+                .setSmallIcon(R.drawable.ic_notif).setContentTitle(title).setContentText(text.lines().first())
+                .setStyle(Notification.BigTextStyle().bigText(text)).setContentIntent(pi).setAutoCancel(true)
+            actions.forEach { b.addAction(it) }
+            nm.notify(id, b.build())
         } catch (_: Exception) {
         }
     }
+
+    fun alert(ctx: Context, id: Int, title: String, text: String) = post(ctx, id, title, text, true)
 }
 
 /** Process-wide antivirus state; scans keep running while you browse other pages. */
