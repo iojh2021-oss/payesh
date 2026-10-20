@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 5,
-  "generated": "2026-10-20T17:03:43Z",
+  "version": 6,
+  "generated": "2026-10-20T21:37:18Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "60bf136bc1d8c2a5f64cc3be1c747dedb2f2cfc3a87112568cfe4505b5edd47e",
-      "size": 406137
+      "sha256": "1a1d59f2b208b95d23391aef01f971bf4a43f93ab77b5a7aa8e8cc9ec10b0433",
+      "size": 406305
     }
   ],
   "counts": {
     "hashes": 3239,
-    "packages": 614,
-    "certs": 472,
-    "domains": 928,
+    "packages": 615,
+    "certs": 473,
+    "domains": 929,
     "entry_names": 7,
     "rules": 9
   },
@@ -28,7 +28,7 @@
     {
       "name": "stalkerware-indicators",
       "status": "ok",
-      "count": 5242
+      "count": 5245
     },
     {
       "name": "custom.json",
