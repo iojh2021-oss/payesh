@@ -7,3 +7,5 @@ build/
 .externalNativeBuild
 .cxx
 *.apk
+__pycache__/
+*.pyc

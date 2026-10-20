@@ -173,6 +173,7 @@ class PayeshVpnService : VpnService() {
                 try {
                     History.flush(applicationContext)
                     reap()
+                    AvState.checkTraffic(applicationContext)
                     if (++round % 2 == 0) logStats()
                 } catch (_: Exception) {
                 }

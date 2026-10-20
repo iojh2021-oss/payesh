@@ -161,20 +161,29 @@ object Av {
     private fun certHashes(pi: PackageInfo): List<String> = try {
         val si = pi.signingInfo
         val signers = if (si == null) null else if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
-        signers?.map { s -> MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) } } ?: emptyList()
+        val out = ArrayList<String>()
+        signers?.forEach { s ->
+            val der = s.toByteArray()
+            out.add(MessageDigest.getInstance("SHA-256").digest(der).joinToString("") { "%02x".format(it) })
+            out.add(MessageDigest.getInstance("SHA-1").digest(der).joinToString("") { "%02x".format(it) })
+        }
+        out
     } catch (_: Exception) { emptyList() }
 
-    private fun hasPayload(apkPath: String): Boolean = try {
+    /** One pass over the APK entries: (embedded executable payload?, known indicator file name from the database). */
+    private fun inspectApk(apkPath: String, indicators: Map<String, String>): Pair<Boolean, String?> = try {
         ZipFile(apkPath).use { z ->
             val e = z.entries()
-            var found = false
+            var payload = false
+            var fam: String? = null
             while (e.hasMoreElements()) {
                 val n = e.nextElement().name
-                if (payloadRe.containsMatchIn(n) || rootDexRe.containsMatchIn(n)) { found = true; break }
+                if (payloadRe.containsMatchIn(n) || rootDexRe.containsMatchIn(n)) payload = true
+                if (fam == null && indicators.isNotEmpty()) fam = indicators[n.substringAfterLast('/').lowercase()]
             }
-            found
+            payload to fam
         }
-    } catch (_: Exception) { false }
+    } catch (_: Exception) { false to null }
 
     /** Multi-layer static + behavioral analysis of one app (installed or an APK file). */
     @Suppress("DEPRECATION")
@@ -231,11 +240,14 @@ object Av {
 
         var sha: String? = null
         var payload = false
+        var packerFam: String? = null
         if (ai != null && (hashAll || sideloaded)) {
             val path = ai.sourceDir
             if (path != null) {
                 sha = sha256(File(path))
-                if (sideloaded && hasPayload(path)) { payload = true; add(20, "فایل اجرایی یا APK داخل بستهٔ برنامه تعبیه شده (Payload)") }
+                val (pl, fam) = inspectApk(path, env.db.entries)
+                if (sideloaded && pl) { payload = true; add(20, "فایل اجرایی یا APK داخل بستهٔ برنامه تعبیه شده (Payload)") }
+                if (fam != null) { packerFam = fam; add(15, "نشانهٔ شناخته‌شده داخل APK (پایگاه تهدیدها): $fam") }
             }
         }
         if (installed && sideloaded && score >= 25 && System.currentTimeMillis() - pi.firstInstallTime < 48 * 3_600_000L)
@@ -255,7 +267,7 @@ object Av {
             f(notifOn, "notif_on"); f(notifDecl, "notif_decl"); f(overlayOn, "overlay_on"); f(hidden, "hidden")
             f(sideloaded, "sideloaded"); f(fromStore, "from_store"); f(system, "system"); f(hasNet, "net")
             f(installPerm, "install_perm"); f(sms > 0, "sms_any"); f(sms > 0 && pkg != env.smsDefault, "sms_not_default")
-            f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many")
+            f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many"); f(packerFam != null, "packer")
             f(sideloaded && ai != null && ai.targetSdkVersion < 23, "old_target")
             for (pn in perms) feat.add("perm:" + pn.substringAfterLast('.'))
             for (r in env.db.rules) if (r.matches(feat)) add(r.score, "قانون پایگاه تهدیدها: ${r.name}")

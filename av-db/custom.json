@@ -2,6 +2,17 @@
   "hashes": {},
   "packages": {},
   "certs": {},
+  "domains": {},
+  "allow_packages": [],
+  "entry_names": {
+    "libjiagu.so": "Packer.Jiagu",
+    "libjiagu_a64.so": "Packer.Jiagu",
+    "libdexhelper.so": "Packer.Bangcle",
+    "libsecexe.so": "Packer.Bangcle",
+    "libprotectclass.so": "Packer.Qihoo",
+    "libnqshield.so": "Packer.NQShield",
+    "libegis.so": "Packer.Bangcle"
+  },
   "rules": [
     {"id": "banker.overlay", "name": "الگوی تروجان بانکی: Overlay + Accessibility", "score": 25,
      "all": ["overlay_on", "a11y_on"], "any": ["sms_any", "perm:RECEIVE_SMS", "perm:READ_SMS"], "none": ["from_store", "system"]},
@@ -18,6 +29,8 @@
     {"id": "otp.listener", "name": "شنود کد یک‌بارمصرف: دسترسی اعلان‌ها + پیامک", "score": 20,
      "all": ["notif_on", "sms_any", "sideloaded"], "none": ["system"]},
     {"id": "adware.hidden", "name": "الگوی ادویر: پنهان + اینترنت + اجرا هنگام روشن شدن", "score": 15,
-     "all": ["sideloaded", "hidden", "net"], "any": ["perm:SYSTEM_ALERT_WINDOW", "perm:RECEIVE_BOOT_COMPLETED"], "none": ["system"]}
+     "all": ["sideloaded", "hidden", "net"], "any": ["perm:SYSTEM_ALERT_WINDOW", "perm:RECEIVE_BOOT_COMPLETED"], "none": ["system"]},
+    {"id": "packed.sideload", "name": "برنامهٔ بسته‌بندی‌شده (Packer) از منبع ناشناس با دسترسی ویژه", "score": 20,
+     "all": ["packer", "sideloaded"], "any": ["a11y_on", "a11y_decl", "admin_decl", "notif_on"], "none": ["system"]}
   ]
 }

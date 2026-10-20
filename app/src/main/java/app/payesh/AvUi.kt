@@ -115,6 +115,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
     val quar by AvState.quarantine.collectAsState()
     val score by AvState.score.collectAsState()
     val note by AvState.note.collectAsState()
+    val nets by AvState.netThreats.collectAsState()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -171,6 +172,16 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         }
         items(findings, key = { it.id }) { f -> FindingCard(f, ctx) }
 
+        if (nets.isNotEmpty()) {
+            item {
+                Text(
+                    "ترافیک شبکهٔ مخرب (${nets.size})", color = Color.White, fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            items(nets, key = { it.time.toString() + it.domain + it.uid }) { n -> NetRow(n) }
+        }
+
         if (quar.isNotEmpty()) {
             item {
                 Text(
@@ -190,12 +201,11 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         items(posture, key = { it.title }) { p -> PostureRow(p) }
 
         item { DbCard(ctx) }
-        item { CloudCard(ctx) }
         item { SigCard(ctx) }
         item {
             Text(
                 "روش‌های به‌کاررفته: تحلیل رفتاری و ترکیب دسترسی‌ها (الگوی تروجان بانکی، استاکرویر، Dropper)، بررسی منبع نصب و گواهی امضا، " +
-                    "یافتن Payload تعبیه‌شده در APK، تشخیص فایل اجرایی پنهان‌شده با پسوند جعلی، پایگاه امضای هش (محلی و ابری)، " +
+                    "یافتن Payload تعبیه‌شده در APK، تشخیص فایل اجرایی پنهان‌شده با پسوند جعلی، پایگاه تهدیدهای بروزرسانی‌شونده از گیت‌هاب (هش، پکیج، گواهی، دامنهٔ مخرب)، " +
                     "و پایش لحظه‌ای نصب برنامه‌ها. این ابزار جایگزین آنتی‌ویروس‌های تجاری با موتور و پایگاه داده اختصاصی نیست؛ " +
                     "یک لایهٔ تکمیلی است. نتیجهٔ «مشکوک» لزوماً بدافزار بودن را ثابت نمی‌کند.",
                 color = Muted, fontSize = 11.sp
@@ -410,31 +420,6 @@ fun PostureRow(p: Posture) {
 }
 
 @Composable
-fun CloudCard(ctx: Context) {
-    var on by remember { mutableStateOf(AvPrefs.vtEnabled(ctx)) }
-    var key by remember { mutableStateOf(AvPrefs.vtKey(ctx)) }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("پرس‌وجوی ابری (VirusTotal)", color = Color.White, fontWeight = FontWeight.Bold)
-                Text(
-                    "فقط هش SHA-256 برنامه‌های نصب‌شده از منبع ناشناس ارسال می‌شود، نه خود فایل. با کلید رایگان، حدود ۴ پرس‌وجو در دقیقه.",
-                    color = Muted, fontSize = 11.sp
-                )
-            }
-            Toggle(on) { on = it; AvPrefs.setVt(ctx, it, key) }
-        }
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(
-            value = key, onValueChange = { key = it.trim(); AvPrefs.setVt(ctx, on, key) },
-            singleLine = true, visualTransformation = PasswordVisualTransformation(),
-            placeholder = { Text("API Key (از virustotal.com)", color = Muted) },
-            shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
-        )
-    }
-}
-
-@Composable
 fun SigCard(ctx: Context) {
     var count by remember { mutableStateOf(AvPrefs.sigCount(ctx)) }
     var msg by remember { mutableStateOf<String?>(null) }
@@ -458,6 +443,27 @@ fun SigCard(ctx: Context) {
     }
 }
 
+
+@Composable
+fun NetRow(n: NetThreat) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
+            .border(1.dp, Danger.copy(alpha = .45f), RoundedCornerShape(20.dp)).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier.size(36.dp).clip(CircleShape).background(Danger.copy(alpha = .18f)),
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Rounded.Warning, null, tint = Danger, modifier = Modifier.size(20.dp)) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(n.label, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(ltr(n.domain), color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Badge(n.family, Danger)
+    }
+}
+
 @Composable
 fun DbCard(ctx: Context) {
     val info by AvDbStore.info.collectAsState()
@@ -471,23 +477,31 @@ fun DbCard(ctx: Context) {
         val m = (System.currentTimeMillis() - last) / 60_000
         if (m < 60) "$m دقیقه پیش" else "${m / 60} ساعت پیش"
     }
+    val sigCol = if (info.signed) Accent else if (info.signing) Orange else Muted
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("پایگاه تهدیدها (بروزرسانی بدون بیلد)", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("پایگاه تهدیدها (بروزرسانی از گیت‌هاب)", color = Color.White, fontWeight = FontWeight.Bold)
                 Text(
                     "نسخهٔ ${info.version}" + (if (info.updated.isNotEmpty()) " • ${info.updated}" else "") + " • آخرین بررسی: $ago",
                     color = Muted, fontSize = 11.sp
                 )
                 Text(
-                    "${info.hashes} هش • ${info.pkgs} پکیج • ${info.certs} گواهی • ${info.rules} قانون رفتاری",
+                    "${info.hashes} هش • ${info.pkgs} پکیج • ${info.certs} گواهی • ${info.domains} دامنه • ${info.rules} قانون رفتاری",
                     color = Accent, fontSize = 11.sp
                 )
+                Text(
+                    if (info.signed) "امضای دیجیتال: معتبر ✓"
+                    else if (info.signing) "امضای دیجیتال: هنوز بروزرسانی امضاشده‌ای دریافت نشده"
+                    else "امضای دیجیتال: غیرفعال (کلید عمومی در برنامه نیست؛ فقط هش‌ها بررسی می‌شوند)",
+                    color = sigCol, fontSize = 11.sp
+                )
+                if (info.sources.isNotEmpty()) Text("منابع: ${info.sources}", color = Muted, fontSize = 10.sp)
             }
             Toggle(auto) { auto = it; AvDbStore.setAuto(ctx, it) }
         }
         Text(
-            if (auto) "هر ۶ ساعت یک‌بار خودکار بروزرسانی می‌شود (هش بدافزارها، فهرست سیاه پکیج و گواهی، و قوانین رفتاری جدید)."
+            if (auto) "هر ۶ ساعت یک‌بار خودکار بروزرسانی می‌شود. هر بروزرسانی قبل از استفاده بررسی می‌شود: امضا، نسخه (ضد بازگشت به قدیم)، هش فایل، و تعداد رکوردها."
             else "بروزرسانی خودکار خاموش است.",
             color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
         )
@@ -499,7 +513,7 @@ fun DbCard(ctx: Context) {
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(
             value = url, onValueChange = { url = it; AvDbStore.setUrl(ctx, it) }, singleLine = true,
-            label = { Text("منبع بروزرسانی (https)", color = Muted) },
+            label = { Text("آدرس پایهٔ پایگاه (https)", color = Muted) },
             shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
         )
     }

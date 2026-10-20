@@ -27,6 +27,8 @@ data class AvStatus(
 
 data class AvCounts(val apps: Int = 0, val files: Int = 0, val lastScan: Long = 0, val cloud: Int = 0)
 
+data class NetThreat(val uid: Int, val label: String, val pkg: String?, val domain: String, val family: String, val time: Long)
+
 data class QItem(val id: String, val orig: String, val name: String, val size: Long, val time: Long)
 
 object AvPrefs {
@@ -142,6 +144,8 @@ object AvState {
     val quarantine = MutableStateFlow<List<QItem>>(emptyList())
     val score = MutableStateFlow(-1)
     val note = MutableStateFlow<String?>(null)
+    val netThreats = MutableStateFlow<List<NetThreat>>(emptyList())
+    private val reported = HashSet<String>()
     @Volatile private var cancel = false
     private var job: Job? = null
     private var inited = false
@@ -174,6 +178,27 @@ object AvState {
 
     fun cancelScan() { cancel = true }
 
+    /** Live web protection: matches what apps contact (SNI / DNS seen by the VPN monitor) against malicious domains. */
+    fun checkTraffic(ctx: Context) {
+        val app = ctx.applicationContext
+        val db = AvDbStore.load(app)
+        if (db.domains.isEmpty()) return
+        val pm = app.packageManager
+        for (u in Tracker.uids.values) for (c in u.conns.values) {
+            val url = c.url
+            val host = if (c.port == 53 && url != null && url.startsWith("DNS: ")) url.removePrefix("DNS: ") else (c.domain ?: Tracker.dns[c.ip])
+            if (host == null) continue
+            val fam = db.domainHit(host) ?: continue
+            val key = "${u.uid}|$host"
+            if (!reported.add(key)) continue
+            val pkg = try { pm.getPackagesForUid(u.uid)?.firstOrNull() } catch (_: Exception) { null }
+            val label = if (pkg != null) try { pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString() } catch (_: Exception) { pkg } else "نامشخص (uid ${u.uid})"
+            netThreats.value = listOf(NetThreat(u.uid, label, pkg, host, fam, System.currentTimeMillis())) + netThreats.value.take(99)
+            AvNotify.alert(app, key.hashCode(), "⚠ ارتباط با دامنهٔ مخرب", "$label به $host ($fam) وصل شد")
+            Plog.w("netguard: $label -> $host ($fam)")
+        }
+    }
+
     fun scan(ctx: Context, mode: Int) {
         if (job?.isActive == true) return
         val app = ctx.applicationContext
@@ -204,41 +229,7 @@ object AvState {
                     byId[pkg] = Av.analyze(env, pi, label, true, mode == 1)
                 }
 
-                // 2) cloud reputation (hash only)
-                val key = AvPrefs.vtKey(app)
-                if (!cancel && AvPrefs.vtEnabled(app) && key.isNotBlank()) {
-                    val cands = byId.values.filter { it.sha != null && (it.level > 0 || it.side) }
-                        .sortedByDescending { it.score }.take(if (mode == 1) 25 else 10)
-                    var lastReal = 0L
-                    for ((i, c) in cands.withIndex()) {
-                        if (cancel) break
-                        st("پرس‌وجوی ابری VirusTotal", i, cands.size, c.title)
-                        try {
-                            val sha = c.sha ?: continue
-                            if (!Vt.cached(app, sha)) {
-                                var w = 16_000L - (System.currentTimeMillis() - lastReal) // free API: 4 requests/min
-                                while (w > 0 && !cancel) { Thread.sleep(minOf(w, 500L)); w -= 500L }
-                            }
-                            if (cancel) break
-                            val r = Vt.lookup(app, key, sha)
-                            if (!r.cached) lastReal = System.currentTimeMillis()
-                            cloud++
-                            byId[c.id] = Av.withCloud(c, r.mal, r.susp)
-                        } catch (e: VtError) {
-                            note.value = when (e.code) {
-                                401, 403 -> "کلید VirusTotal نامعتبر است"
-                                429 -> "سهمیهٔ VirusTotal پر شد؛ بعداً دوباره امتحان کن"
-                                else -> "خطای VirusTotal (${e.code})"
-                            }
-                            break
-                        } catch (e: Exception) {
-                            note.value = "اتصال به VirusTotal برقرار نشد"
-                            break
-                        }
-                    }
-                }
-
-                // 3) files: APKs, disguised executables, double extensions, ELF/DEX, EICAR, known hashes
+                // 2) files: APKs, disguised executables, double extensions, ELF/DEX, EICAR, known hashes
                 if (!cancel) {
                     if (Dedup.hasAccess(app)) {
                         st("اسکن فایل‌ها (APK، فایل‌های پنهان‌شده، اجرایی)")
