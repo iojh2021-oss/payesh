@@ -9,3 +9,6 @@ build/
 *.apk
 __pycache__/
 *.pyc
+
+app/src/main/rust/target/
+app/src/main/jniLibs/

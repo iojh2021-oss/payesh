@@ -125,6 +125,11 @@ object AvNotify {
     fun post(ctx: Context, id: Int, title: String, text: String, high: Boolean, actions: List<Notification.Action> = emptyList()) {
         try {
             val nm = ctx.getSystemService(NotificationManager::class.java)
+            if (!nm.areNotificationsEnabled()) {
+                Plog.w("notification blocked (notifications disabled): $title")
+                AvGuardState.note.value = "اعلان‌ها خاموش‌اند؛ پیام نمایش داده نشد"
+                return
+            }
             nm.createNotificationChannel(NotificationChannel("av_alerts", "هشدار آنتی‌ویروس", NotificationManager.IMPORTANCE_HIGH))
             nm.createNotificationChannel(NotificationChannel("av_info", "اطلاعیه‌های آنتی‌ویروس", NotificationManager.IMPORTANCE_DEFAULT))
             val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -133,7 +138,10 @@ object AvNotify {
                 .setStyle(Notification.BigTextStyle().bigText(text)).setContentIntent(pi).setAutoCancel(true)
             actions.forEach { b.addAction(it) }
             nm.notify(id, b.build())
-        } catch (_: Exception) {
+            Plog.w("notification sent: $title")
+            AvGuardState.note.value = "آخرین اعلان: $title"
+        } catch (e: Exception) {
+            Plog.w("notification failed: $e")
         }
     }
 

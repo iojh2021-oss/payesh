@@ -107,6 +107,8 @@ class GuardService : Service() {
 
     private fun begin() {
         lastPoll = System.currentTimeMillis()
+        AvGuardState.running.value = true
+        AvGuardState.events.value = 0
         work = Executors.newFixedThreadPool(2)
         val r = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) { onPkg(i) }
@@ -128,6 +130,7 @@ class GuardService : Service() {
     }
 
     private fun shutdown() {
+        AvGuardState.running.value = false
         sched?.shutdownNow(); sched = null
         work?.shutdownNow(); work = null
         watcher?.stop(); watcher = null
@@ -150,8 +153,14 @@ class GuardService : Service() {
         tick++
         checkInstaller()
         if (tick % 7 == 0) pollFiles()
-        if (tick % 40 == 0 && (watcher?.count() ?: 0) == 0 && Dedup.hasAccess(this)) startWatcher()
-        if (tick % 100 == 0) { behaviorCheck(); watcher?.start(Dedup.roots(this)) } // also picks up newly created folders
+        if (tick % 5 == 0 && (watcher?.count() ?: 0) == 0 && Dedup.hasAccess(this)) startWatcher()
+        if (tick == 5) integrityCheck()
+        if (tick % 100 == 0) {
+            behaviorCheck()
+            integrityCheck()
+            watcher?.start(Dedup.roots(this)) // also picks up newly created folders
+            Plog.w("guard alive: watching=${watcher?.count() ?: 0} allFiles=${Dedup.hasAccess(this)} usage=${Fg.granted(this)} events=${AvGuardState.events.value}")
+        }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
     }
 
@@ -220,11 +229,24 @@ class GuardService : Service() {
         if (ext in TEMP_EXT) return
         if (!handled.add(f.path + "|" + f.lastModified())) return
         if (handled.size > 2000) handled.clear()
+        AvGuardState.events.value = AvGuardState.events.value + 1
+        if (ext in APK_EXT) Plog.w("guard: new file ${f.name}")
         work?.execute { handleFile(f, ext) }
     }
 
-    private fun handleFile(f: File, ext: String) {
+    private val pendingRe = Regex("^\\.pending-\\d+-")
+
+    private fun handleFile(f0: File, ext0: String) {
         try {
+            var f = f0
+            if (pendingRe.containsMatchIn(f0.name)) {
+                // Chrome / Download Manager write ".pending-<n>-name.apk" and rename it when the download is finished
+                val clean = File(f0.parentFile, f0.name.replace(pendingRe, ""))
+                var tries = 0
+                while (tries < 10 && !clean.isFile) { Thread.sleep(2_000); tries++ }
+                if (clean.isFile) f = clean
+            }
+            val ext = f.name.substringAfterLast('.', "").lowercase()
             if (!f.isFile || f.length() < 64) return
             val ask = AvPrefs.askBeforeScan(this)
             if (ext in APK_EXT) {
@@ -315,6 +337,46 @@ class GuardService : Service() {
             } else AvGuard.scanAndNotify(this, f, who) // re-report the stored verdict right before the install
         } catch (e: Exception) {
             Plog.w("installer check failed: $e")
+        }
+    }
+
+    // ------------------------------------------------------------------ system integrity indicators
+
+    private fun integrityText(code: String, detail: String): String? = when (code) {
+        "SU_BINARY" -> "فایل su (دسترسی روت) روی دستگاه پیدا شد: $detail"
+        "MAGISK", "MAGISK_MOUNT" -> "ردپای Magisk / روت‌کردن پیدا شد"
+        "INSECURE_BUILD" -> "سیستم‌عامل در حالت ناامن (ro.secure=0) اجرا می‌شود"
+        "DEBUGGABLE_BUILD" -> "سیستم‌عامل در حالت دیباگ (ro.debuggable=1) است"
+        "TEST_KEYS" -> "سیستم‌عامل با کلیدهای آزمایشی (test-keys) امضا شده، یعنی رام غیررسمی است"
+        "VERIFIED_BOOT" -> "Verified Boot در حالت سالم نیست ($detail)؛ ممکن است سیستم تغییر کرده باشد"
+        "BOOTLOADER_UNLOCKED" -> "بوت‌لودر قفل‌نشده است؛ تغییر سیستم/کرنل ممکن است"
+        "SELINUX_PERMISSIVE" -> "SELinux در حالت Permissive است؛ لایهٔ امنیتی اصلی غیرفعال است"
+        "HOOK_LIBRARY" -> "کتابخانهٔ هوک/تزریق ($detail) داخل پردازش‌ها دیده شد"
+        else -> null
+    }
+
+    /**
+     * Reports NEW user-space tamper indicators (root, unlocked bootloader, permissive SELinux, hooking frameworks).
+     * This cannot see kernel-level rootkits: those can hide from any non-privileged check.
+     */
+    private fun integrityCheck() {
+        if (!NativeEngine.ok) return
+        val res = try { NativeEngine.integrityProbe() } catch (_: Throwable) { null } ?: return
+        val cur = res.toSet()
+        val sp = getSharedPreferences("guard_integrity", Context.MODE_PRIVATE)
+        val prev = sp.getStringSet("seen", null)
+        sp.edit().putStringSet("seen", cur).apply()
+        AvGuardState.integrity.value = cur.size
+        for (line in cur) {
+            if (prev != null && line in prev) continue
+            val p = line.split('|', limit = 3)
+            if (p.size < 2) continue
+            if (prev == null && p[0] != "H") continue // first run: only raise high-severity findings
+            val txt = integrityText(p[1], p.getOrElse(2) { "" }) ?: continue
+            AvNotify.post(
+                this, ("int:" + p[1]).hashCode(), "هشدار سلامت سیستم",
+                txt + "\nاین بررسی در سطح برنامه است و روت‌کیت‌های کرنل را نمی‌تواند ببیند.", p[0] == "H"
+            )
         }
     }
 

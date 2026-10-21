@@ -17,61 +17,134 @@ import kotlin.concurrent.thread
 object AvGuardState {
     val watched = MutableStateFlow(0)
     val last = MutableStateFlow("—")
+    val running = MutableStateFlow(false)   // is the guard service alive?
+    val events = MutableStateFlow(0)        // file events seen since the service started
+    val note = MutableStateFlow("—")        // last notification attempt
+    val integrity = MutableStateFlow(0)     // number of system-integrity indicators found
 }
 
 /**
  * Instant detection of new files: one inotify watch per download-like folder (and its sub-folders).
  * Fires when a file is completely written or renamed into place (e.g. Chrome's .crdownload -> .apk).
+ * Uses the native (Rust) inotify watcher when available, otherwise falls back to FileObserver.
  */
 class DownloadWatcher(private val onFile: (File) -> Unit) {
     private val observers = HashMap<String, FileObserver>()
+    private val nativeDirs = HashMap<String, Int>() // native mode: dir path -> remaining depth
     private val recent = HashMap<String, Long>()
     private val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.CREATE
+    private var nh = 0L
+    private var th: Thread? = null
+    @Volatile private var running = false
 
-    fun count() = observers.size
+    fun count(): Int = synchronized(this) { if (nh != 0L) nativeDirs.size else observers.size }
 
     @Synchronized
     fun start(roots: List<File>) {
+        if (nh == 0L && observers.isEmpty() && NativeEngine.ok) startNative()
         for (r in roots) {
             for (d in Av.SMART_DIRS) addTree(File(r, d), 4)
             // files dropped straight into the storage root and into apps' own top-level folders (e.g. /sdcard/SomeApp)
             addTree(r, 0)
             r.listFiles()?.filter { it.isDirectory && it.name != "Android" && !it.name.startsWith(".") }?.forEach { addTree(it, 0) }
         }
-        AvGuardState.watched.value = observers.size
+        AvGuardState.watched.value = count()
     }
 
-    @Synchronized
     fun stop() {
-        observers.values.forEach { it.stopWatching() }
-        observers.clear()
+        var h = 0L
+        var t: Thread? = null
+        synchronized(this) {
+            h = nh; t = th
+            nh = 0L; th = null; running = false
+            observers.values.forEach { it.stopWatching() }
+            observers.clear()
+            nativeDirs.clear()
+        }
+        if (h != 0L) {
+            try {
+                NativeEngine.watchWake(h)
+                t?.join(3_000)
+                // never free while the reader thread might still be inside the native call
+                if (t == null || !t!!.isAlive) NativeEngine.watchFree(h)
+            } catch (_: Throwable) {}
+        }
         AvGuardState.watched.value = 0
+    }
+
+    private fun startNative() {
+        val h = try { NativeEngine.watchCreate() } catch (_: Throwable) { 0L }
+        if (h == 0L) return
+        nh = h
+        running = true
+        th = Thread({ nativeLoop(h) }, "guard-inotify").also { it.isDaemon = true; it.start() }
+        Plog.w("guard: native inotify watcher active")
+    }
+
+    private fun nativeLoop(h: Long) {
+        try {
+            while (running) {
+                val ev = NativeEngine.watchNext(h, 1_000) ?: break
+                for (s in ev) onNative(s)
+            }
+        } catch (e: Throwable) {
+            Plog.w("native watch loop failed: $e")
+        }
+    }
+
+    private fun onNative(s: String) {
+        if (!running) return
+        val i = s.indexOf('|')
+        if (i < 0) return
+        val m = s.substring(0, i).toIntOrNull() ?: return
+        val p = s.substring(i + 1)
+        if (p.isEmpty()) return // queue overflow: the guard's periodic poll is the safety net
+        val f = File(p)
+        if ((m and 0x40000000) != 0) { // IN_ISDIR: a new sub-folder
+            val d = synchronized(this) { nativeDirs[f.parent ?: ""] } ?: 0
+            if (d > 0) addTree(f, d - 1)
+            AvGuardState.watched.value = count()
+            return
+        }
+        if ((m and (0x8 or 0x80)) == 0) return // only CLOSE_WRITE / MOVED_TO
+        val now = System.currentTimeMillis()
+        synchronized(recent) {
+            if ((recent[f.path] ?: 0L) > now - 3_000) return
+            recent[f.path] = now
+            if (recent.size > 500) recent.clear()
+        }
+        onFile(f)
     }
 
     @Synchronized
     private fun addTree(dir: File, depth: Int) {
-        if (!dir.isDirectory || observers.size >= 300 || dir.name in Av.SKIP_DIRS || dir.path in observers) return
-        val o = object : FileObserver(dir, mask) {
-            override fun onEvent(event: Int, path: String?) {
-                if (path == null) return
-                val f = File(dir, path)
-                if (f.isDirectory) {
-                    if (depth > 0) addTree(f, depth - 1)
-                    AvGuardState.watched.value = observers.size
-                    return
+        if (!dir.isDirectory || count() >= 300 || dir.name in Av.SKIP_DIRS || dir.path in observers || dir.path in nativeDirs) return
+        if (nh != 0L) {
+            if (NativeEngine.watchAdd(nh, dir.path) < 0) return
+            nativeDirs[dir.path] = depth
+        } else {
+            val o = object : FileObserver(dir, mask) {
+                override fun onEvent(event: Int, path: String?) {
+                    if (path == null) return
+                    val f = File(dir, path)
+                    if (f.isDirectory) {
+                        if (depth > 0) addTree(f, depth - 1)
+                        AvGuardState.watched.value = observers.size
+                        return
+                    }
+                    if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
+                    val now = System.currentTimeMillis()
+                    synchronized(recent) {
+                        if ((recent[f.path] ?: 0L) > now - 3_000) return
+                        recent[f.path] = now
+                        if (recent.size > 500) recent.clear()
+                    }
+                    onFile(f)
                 }
-                if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
-                val now = System.currentTimeMillis()
-                synchronized(recent) {
-                    if ((recent[f.path] ?: 0L) > now - 3_000) return
-                    recent[f.path] = now
-                    if (recent.size > 500) recent.clear()
-                }
-                onFile(f)
             }
+            o.startWatching()
+            observers[dir.path] = o
         }
-        o.startWatching()
-        observers[dir.path] = o
         if (depth > 0) dir.listFiles()?.filter { it.isDirectory }?.forEach { addTree(it, depth - 1) }
     }
 }

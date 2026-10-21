@@ -66,6 +66,8 @@ class AvEnv(val ctx: Context) {
     } catch (_: Exception) { pkg }
 }
 
+class ContentRes(val c2: List<String>, val packed: List<String>)
+
 class VtRes(val mal: Int, val susp: Int, val cached: Boolean)
 class VtError(val code: Int) : Exception("VirusTotal $code")
 
@@ -135,7 +137,12 @@ object Av {
 
     fun level(score: Int) = if (score >= 70) 2 else if (score >= 35) 1 else 0
 
-    fun sha256(f: File): String? = try {
+    fun sha256(f: File): String? {
+        if (NativeEngine.ok) NativeEngine.sha256File(f.path)?.let { return it }
+        return sha256Kotlin(f)
+    }
+
+    private fun sha256Kotlin(f: File): String? = try {
         val md = MessageDigest.getInstance("SHA-256")
         FileInputStream(f).use { ins ->
             val b = ByteArray(256 * 1024)
@@ -169,6 +176,70 @@ object Av {
         }
         out
     } catch (_: Exception) { emptyList() }
+
+    private val blobExt = setOf("", "dat", "bin", "data", "enc", "cfg", "res", "tmp", "lib")
+
+    private fun feedAll(h: Long, ins: java.io.InputStream, limit: Long = Long.MAX_VALUE) {
+        val b = ByteArray(64 * 1024)
+        var total = 0L
+        while (total < limit) {
+            val r = ins.read(b)
+            if (r < 0) break
+            NativeEngine.scannerFeed(h, b, r)
+            total += r
+        }
+    }
+
+    /**
+     * Native content scan of an APK: (1) known malicious domains / patterns inside the DEX code
+     * (Aho-Corasick over the decompressed bytes), (2) encrypted/packed data blobs in assets (byte entropy).
+     */
+    fun contentScan(apkPath: String, db: AvDb): ContentRes? {
+        if (!NativeEngine.ok) return null
+        val pats = ArrayList<String>()
+        val labels = ArrayList<String>()
+        for ((d, fam) in db.domains) if (d.length >= 6) { pats.add(d); labels.add("$d ($fam)") }
+        for ((p, fam) in db.patterns) { pats.add(p); labels.add("$p ($fam)") }
+        return try {
+            val c2 = ArrayList<String>()
+            val packed = ArrayList<String>()
+            ZipFile(apkPath).use { z ->
+                if (pats.isNotEmpty()) {
+                    val h = NativeEngine.scannerCreate(pats.toTypedArray())
+                    if (h != 0L) try {
+                        val e = z.entries()
+                        while (e.hasMoreElements()) {
+                            val en = e.nextElement()
+                            if (!en.name.endsWith(".dex", true) || en.size > 80_000_000L) continue
+                            z.getInputStream(en).use { ins -> feedAll(h, ins) }
+                        }
+                        for (i in NativeEngine.scannerMatches(h)) if (i in labels.indices) c2.add(labels[i])
+                    } finally {
+                        NativeEngine.scannerFree(h)
+                    }
+                }
+                val e2 = z.entries()
+                while (e2.hasMoreElements()) {
+                    val en = e2.nextElement()
+                    val n = en.name
+                    if (en.isDirectory || en.size < 30_000 || !(n.startsWith("assets/") || n.startsWith("res/raw/"))) continue
+                    val file = n.substringAfterLast('/')
+                    if (file.contains('.') && file.substringAfterLast('.').lowercase() !in blobExt) continue
+                    val h = NativeEngine.scannerCreate(emptyArray())
+                    if (h == 0L) continue
+                    try {
+                        z.getInputStream(en).use { ins -> feedAll(h, ins, 256 * 1024) }
+                        if (NativeEngine.scannerEntropy(h) >= 7.6) packed.add(file)
+                    } finally {
+                        NativeEngine.scannerFree(h)
+                    }
+                }
+            }
+            ContentRes(c2, packed)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     /** One pass over the APK entries: (embedded executable payload?, known indicator file name from the database). */
     private fun inspectApk(apkPath: String, indicators: Map<String, String>): Pair<Boolean, String?> = try {
@@ -241,6 +312,8 @@ object Av {
         var sha: String? = null
         var payload = false
         var packerFam: String? = null
+        var c2hit = false
+        var packedBlob = false
         if (ai != null && (hashAll || sideloaded)) {
             val path = ai.sourceDir
             if (path != null) {
@@ -248,6 +321,20 @@ object Av {
                 val (pl, fam) = inspectApk(path, env.db.entries)
                 if (sideloaded && pl) { payload = true; add(20, "فایل اجرایی یا APK داخل بستهٔ برنامه تعبیه شده (Payload)") }
                 if (fam != null) { packerFam = fam; add(15, "نشانهٔ شناخته‌شده داخل APK (پایگاه تهدیدها): $fam") }
+                if (sideloaded) {
+                    val cs = contentScan(path, env.db)
+                    if (cs != null) {
+                        if (cs.c2.isNotEmpty()) {
+                            c2hit = true
+                            add(60, "دامنهٔ مخرب شناخته‌شده داخل کد برنامه: " + cs.c2.take(3).joinToString("، "))
+                            if (cs.c2.size >= 2) add(20, "چند نشانهٔ شبکه‌ای مخرب در کد (${cs.c2.size} مورد)")
+                        }
+                        if (cs.packed.isNotEmpty()) {
+                            packedBlob = true
+                            add(12, "فایل داده با آنتروپی بسیار بالا (احتمالاً رمز/بسته‌بندی‌شده): " + cs.packed.take(2).joinToString("، "))
+                        }
+                    }
+                }
             }
         }
         if (installed && sideloaded && score >= 25 && System.currentTimeMillis() - pi.firstInstallTime < 48 * 3_600_000L)
@@ -267,7 +354,7 @@ object Av {
             f(notifOn, "notif_on"); f(notifDecl, "notif_decl"); f(overlayOn, "overlay_on"); f(hidden, "hidden")
             f(sideloaded, "sideloaded"); f(fromStore, "from_store"); f(system, "system"); f(hasNet, "net")
             f(installPerm, "install_perm"); f(sms > 0, "sms_any"); f(sms > 0 && pkg != env.smsDefault, "sms_not_default")
-            f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many"); f(packerFam != null, "packer")
+            f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many"); f(packerFam != null, "packer"); f(c2hit, "c2_domain"); f(packedBlob, "packed_blob")
             f(sideloaded && ai != null && ai.targetSdkVersion < 23, "old_target")
             for (pn in perms) feat.add("perm:" + pn.substringAfterLast('.'))
             for (r in env.db.rules) if (r.matches(feat)) add(r.score, "قانون پایگاه تهدیدها: ${r.name}")

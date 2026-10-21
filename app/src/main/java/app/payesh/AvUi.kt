@@ -542,6 +542,9 @@ fun GuardCard(ctx: Context) {
     val enabled by AvState.enabled.collectAsState()
     val watched by AvGuardState.watched.collectAsState()
     val last by AvGuardState.last.collectAsState()
+    val alive by AvGuardState.running.collectAsState()
+    val events by AvGuardState.events.collectAsState()
+    val lastNote by AvGuardState.note.collectAsState()
     var ask by remember { mutableStateOf(AvPrefs.askBeforeScan(ctx)) }
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(2000); tick++ } }
@@ -556,6 +559,9 @@ fun GuardCard(ctx: Context) {
             else "خاموش است؛ کلید «محافظت لحظه‌ای» بالا را روشن کن.",
             color = if (enabled) Accent else Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
         )
+        CheckRow(alive || !enabled, if (alive) "سرویس محافظ: در حال اجرا ✓" else if (enabled) "سرویس محافظ فعال نیست (احتمالاً سیستم بسته)؛ اینجا بزن تا دوباره راه بیفتد" else "سرویس محافظ: خاموش") {
+            AvState.startGuard(ctx)
+        }
         CheckRow(notif, if (notif) "اعلان‌ها مجازند" else "اعلان‌ها خاموش‌اند؛ اینجا بزن و روشن کن") {
             ctx.startActivity(
                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
@@ -572,7 +578,12 @@ fun GuardCard(ctx: Context) {
             ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
         Spacer(Modifier.height(6.dp))
-        Text("آخرین مورد بررسی‌شده: $last", color = Muted, fontSize = 11.sp)
+        Text("آخرین مورد بررسی‌شده: $last • رویدادهای فایل: $events", color = Muted, fontSize = 11.sp)
+        Text(lastNote, color = Muted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        AvBtn("ارسال اعلان آزمایشی", false, Accent, Modifier.fillMaxWidth()) {
+            AvNotify.post(ctx, 4, "آزمایش اعلان", "اگر این پیام را می‌بینی، اعلان‌های آنتی‌ویروس درست کار می‌کنند.", true)
+        }
         Spacer(Modifier.height(8.dp))
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp),

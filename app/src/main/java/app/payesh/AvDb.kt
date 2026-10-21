@@ -30,7 +30,8 @@ class AvDb(
     val hashes: Map<String, String>, val pkgs: Map<String, String>, val certs: Map<String, String>,
     val rules: List<AvRule>,
     val domains: Map<String, String> = emptyMap(),
-    val entries: Map<String, String> = emptyMap()
+    val entries: Map<String, String> = emptyMap(),
+    val patterns: Map<String, String> = emptyMap()   // byte/text patterns searched inside APK code (DEX)
 ) {
     /** Matches the host or any parent domain against the malicious-domain list. */
     fun domainHit(host: String): String? {
@@ -114,7 +115,8 @@ object AvDbStore {
             strMap("certs") { hex40or64.matches(it) },
             rules,
             strMap("domains") { it.length in 4..253 && it.contains('.') && hostRe.matches(it) },
-            strMap("entry_names") { it.length in 3..120 && !it.contains('/') }
+            strMap("entry_names") { it.length in 3..120 && !it.contains('/') },
+            strMap("patterns") { it.length in 6..200 }
         )
     }
 

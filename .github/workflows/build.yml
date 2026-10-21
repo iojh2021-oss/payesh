@@ -14,6 +14,20 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src/main/rust
+      - name: Rust unit tests (host)
+        working-directory: app/src/main/rust
+        run: cargo test --release
+      - name: Build Rust engine for Android
+        working-directory: app/src/main/rust
+        run: |
+          cargo install cargo-ndk --locked
+          cargo ndk -t arm64-v8a -t armeabi-v7a --platform 29 -o ../jniLibs build --release
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7

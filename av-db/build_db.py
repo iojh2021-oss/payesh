@@ -21,6 +21,12 @@ PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 HOST = re.compile(r"^[a-z0-9]([a-z0-9.-]{1,251})[a-z0-9]$")
 MAX_HASHES = 30000
 MAX_DOMAINS = 20000
+DEFAULT_ALLOW_DOMAINS = {
+    "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "android.com", "firebaseio.com",
+    "amazonaws.com", "cloudfront.net", "cloudflare.com", "akamaized.net", "github.com", "githubusercontent.com",
+    "facebook.com", "fbcdn.net", "whatsapp.com", "whatsapp.net", "telegram.org", "t.me", "microsoft.com", "apple.com",
+    "instagram.com", "twitter.com", "youtube.com", "wikipedia.org", "mozilla.org", "digicert.com",
+}
 STALK_BASES = [
     "https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/",
     "https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/main/",
@@ -202,6 +208,12 @@ def main():
     packages = {k: v for k, v in packages.items() if k not in allow}  # safety allowlist
     hashes = dict(list(hashes.items())[-MAX_HASHES:])  # drop the oldest
     domains = dict(list(domains.items())[-MAX_DOMAINS:])
+    patterns = valid_map(custom.get("patterns", {}), lambda k: 6 <= len(k) <= 200, lambda k: str(k).lower())
+    # never block well-known infrastructure domains (poisoned or over-broad feed entries)
+    allow_d = set(d.lower() for d in custom.get("allow_domains", [])) | DEFAULT_ALLOW_DOMAINS
+    def allowed(d):
+        return any(d == a or d.endswith("." + a) or a.endswith("." + d) for a in allow_d)
+    domains = {d: f for d, f in domains.items() if not allowed(d)}
     entry_names = valid_map(custom.get("entry_names", {}), lambda k: 3 <= len(k) <= 120 and "/" not in k, lambda k: str(k).lower())
     rules = [r for r in custom.get("rules", []) if isinstance(r, dict) and r.get("id")]
 
@@ -213,7 +225,7 @@ def main():
     # 3) build
     doc = {"schema": 2, "version": old.get("version", 0), "updated": old.get("updated", ""),
            "hashes": hashes, "packages": packages, "certs": certs, "domains": domains,
-           "entry_names": entry_names, "rules": rules}
+           "entry_names": entry_names, "patterns": patterns, "rules": rules}
     strip = lambda d: {k: v for k, v in d.items() if k not in ("version", "updated")}
     if strip(doc) == strip(old) and os.path.exists(man_path):
         print("no changes (version %s)" % old.get("version"))
@@ -230,7 +242,7 @@ def main():
         "schema": 2, "version": doc["version"], "generated": doc["updated"], "min_app": 1,
         "files": [{"name": "av-db.json", "sha256": sha, "size": len(raw)}],
         "counts": {"hashes": len(hashes), "packages": len(packages), "certs": len(certs),
-                   "domains": len(domains), "entry_names": len(entry_names), "rules": len(rules)},
+                   "domains": len(domains), "entry_names": len(entry_names), "patterns": len(patterns), "rules": len(rules)},
         "sources": sources,
     }
     with open(man_path, "w", encoding="utf-8") as f:
