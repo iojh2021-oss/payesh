@@ -162,6 +162,7 @@ class GuardService : Service() {
             Plog.w("guard alive: watching=${watcher?.count() ?: 0} allFiles=${Dedup.hasAccess(this)} usage=${Fg.granted(this)} events=${AvGuardState.events.value}")
         }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
+        if (tick % 100 == 50) DashboardSync.syncIfDue(this)
     }
 
     // ------------------------------------------------------------------ app installs
