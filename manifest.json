@@ -1,17 +1,17 @@
 {
   "schema": 2,
-  "version": 8,
-  "generated": "2026-10-21T17:11:43Z",
+  "version": 9,
+  "generated": "2026-10-22T17:10:20Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "f7044a0ca052edfdbe1584e17b225a71b818eec3e820f41786e84241631fb8af",
-      "size": 401249
+      "sha256": "bbe9f1cd7fd61a23d9e04b934f84c6be0d6940a8aa1f1655eed183765ea3fad7",
+      "size": 401328
     }
   ],
   "counts": {
-    "hashes": 3241,
+    "hashes": 3242,
     "packages": 615,
     "certs": 473,
     "domains": 841,
@@ -23,7 +23,7 @@
     {
       "name": "MalwareBazaar",
       "status": "ok",
-      "count": 7,
+      "count": 3,
       "new": 1
     },
     {
