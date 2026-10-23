@@ -101,10 +101,15 @@ object AppLock {
 
     /** true = correct. Counts failures and applies growing delays after the 5th wrong attempt. */
     fun verify(ctx: Context, pw: String): Boolean {
+        if (pw.isEmpty()) return false
         val sp = p(ctx)
         val salt = Base64.decode(sp.getString("salt", "") ?: return false, Base64.NO_WRAP)
         val want = Base64.decode(sp.getString("hash", "") ?: return false, Base64.NO_WRAP)
-        val ok = MessageDigest.isEqual(derive(pw, salt, sp.getInt("iter", ITER)), want)
+        val ok = try {
+            MessageDigest.isEqual(derive(pw, salt, sp.getInt("iter", ITER)), want)
+        } catch (_: Exception) {
+            return false
+        }
         if (ok) { sp.edit().putInt("fails", 0).putLong("until", 0).apply(); return true }
         val f = sp.getInt("fails", 0) + 1
         val delay = if (f >= 5) minOf(30L shl (f - 5).coerceAtMost(5), 900L) * 1000 else 0L
@@ -176,20 +181,30 @@ fun AppLockCard(ctx: Context) {
         AvBtn(if (show) "پنهان کردن" else "نمایش رمزها", false, Accent, Modifier.fillMaxWidth()) { show = !show }
         Spacer(Modifier.height(6.dp))
         AvBtn(if (on) "تغییر رمز" else "فعال‌سازی قفل", true, Accent, Modifier.fillMaxWidth()) {
-            if (n1.length < AppLock.MIN_LEN) { msg = "رمز باید حداقل ${AppLock.MIN_LEN} نویسه باشد"; return@AvBtn }
+            if (on && cur.isEmpty()) { msg = "اول رمز فعلی را وارد کن"; return@AvBtn }
+            if (n1.length < AppLock.MIN_LEN) { msg = "رمز جدید باید حداقل ${AppLock.MIN_LEN} نویسه باشد"; return@AvBtn }
             if (n1 != n2) { msg = "تکرار رمز یکسان نیست"; return@AvBtn }
             scope.launch {
-                if (on && !withContext(Dispatchers.Default) { AppLock.verify(ctx, cur) }) { msg = "رمز فعلی اشتباه است"; return@launch }
-                withContext(Dispatchers.Default) { AppLock.set(ctx, n1) }
-                on = true; cur = ""; n1 = ""; n2 = ""; msg = "رمز ذخیره شد ✓"
+                try {
+                    if (on && !withContext(Dispatchers.Default) { AppLock.verify(ctx, cur) }) { msg = "رمز فعلی اشتباه است"; return@launch }
+                    withContext(Dispatchers.Default) { AppLock.set(ctx, n1) }
+                    on = true; cur = ""; n1 = ""; n2 = ""; msg = "رمز ذخیره شد ✓"
+                } catch (e: Exception) {
+                    msg = "خطا: ${e.javaClass.simpleName}"
+                }
             }
         }
         if (on) {
             Spacer(Modifier.height(6.dp))
             AvBtn("خاموش کردن قفل", false, Accent, Modifier.fillMaxWidth()) {
+                if (cur.isEmpty()) { msg = "برای خاموش کردن، رمز فعلی را در کادر «رمز فعلی» وارد کن"; return@AvBtn }
                 scope.launch {
-                    if (!withContext(Dispatchers.Default) { AppLock.verify(ctx, cur) }) { msg = "رمز فعلی اشتباه است"; return@launch }
-                    AppLock.clear(ctx); on = false; cur = ""; n1 = ""; n2 = ""; msg = "قفل خاموش شد"
+                    try {
+                        if (!withContext(Dispatchers.Default) { AppLock.verify(ctx, cur) }) { msg = "رمز فعلی اشتباه است"; return@launch }
+                        AppLock.clear(ctx); on = false; cur = ""; n1 = ""; n2 = ""; msg = "قفل خاموش شد"
+                    } catch (e: Exception) {
+                        msg = "خطا: ${e.javaClass.simpleName}"
+                    }
                 }
             }
         }
