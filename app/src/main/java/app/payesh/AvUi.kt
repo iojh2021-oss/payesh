@@ -141,6 +141,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
             )
         }
         item { GuardCard(ctx) }
+        item { AppLockCard(ctx) }
         item { DashboardCard(ctx) }
         item {
             val last = counts.lastScan

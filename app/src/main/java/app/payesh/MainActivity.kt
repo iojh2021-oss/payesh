@@ -8,6 +8,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.view.WindowManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,6 +17,8 @@ import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 
@@ -35,6 +38,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Plog.init(this)
         AvState.init(this)
+        AppLock.init(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -42,10 +46,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = CardBg)) {
-                    PayeshApp(vm, ::toggle, ::openUsage, ::openVpnSettings)
+                    val locked by AppLock.locked.collectAsState()
+                    if (locked) LockScreen(this@MainActivity) else PayeshApp(vm, ::toggle, ::openUsage, ::openVpnSettings)
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppLock.onReturn(this)
+        // With the lock on, hide the app from screenshots and the recent-apps preview.
+        if (AppLock.enabled(this)) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    override fun onStop() {
+        AppLock.onLeave()
+        super.onStop()
     }
 
     private fun toggle() {
