@@ -1,17 +1,17 @@
 {
   "schema": 2,
-  "version": 9,
-  "generated": "2026-10-22T17:10:20Z",
+  "version": 10,
+  "generated": "2026-10-23T04:48:46Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "bbe9f1cd7fd61a23d9e04b934f84c6be0d6940a8aa1f1655eed183765ea3fad7",
-      "size": 401328
+      "sha256": "80722859f6643c6e646aeea0d2abc0f6ea74a3f31078aeb9266e0326b6372b78",
+      "size": 401414
     }
   ],
   "counts": {
-    "hashes": 3242,
+    "hashes": 3243,
     "packages": 615,
     "certs": 473,
     "domains": 841,
