@@ -138,20 +138,30 @@ object DashboardSync {
                 lastResult.value = "آدرس باید با https:// شروع شود و توکن خالی نباشد"
                 return@launch
             }
-            try {
-                val c = URL("$url/api/v1/telemetry").openConnection() as HttpURLConnection
-                c.requestMethod = "POST"
-                c.connectTimeout = 10_000; c.readTimeout = 15_000
-                c.doOutput = true
-                c.setRequestProperty("Content-Type", "application/json")
-                c.setRequestProperty("Authorization", "Bearer $token")
-                c.outputStream.use { it.write(build(app).toString().toByteArray()) }
-                val code = c.responseCode
-                c.disconnect()
-                if (code in 200..299) { lastSent = System.currentTimeMillis(); lastResult.value = "ارسال شد ✓" }
-                else lastResult.value = "خطای سرور: HTTP $code"
-            } catch (e: Exception) {
-                lastResult.value = "ارسال ناموفق: ${e.javaClass.simpleName}"
+            var attempt = 0
+            while (true) {
+                attempt++
+                lastResult.value = if (attempt == 1) "در حال ارسال…" else "در حال ارسال… (تلاش $attempt از 3)"
+                try {
+                    val c = URL("$url/api/v1/telemetry").openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.connectTimeout = 20_000; c.readTimeout = 45_000
+                    c.doOutput = true
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.setRequestProperty("Authorization", "Bearer $token")
+                    c.outputStream.use { it.write(build(app).toString().toByteArray()) }
+                    val code = c.responseCode
+                    (if (code in 200..299) c.inputStream else c.errorStream)?.use { it.readBytes() }
+                    if (code in 200..299) { lastSent = System.currentTimeMillis(); lastResult.value = "ارسال شد ✓" }
+                    else lastResult.value = "خطای سرور: HTTP $code"
+                    break
+                } catch (e: Exception) {
+                    if (attempt >= 3) {
+                        lastResult.value = "ارسال ناموفق: ${e.javaClass.simpleName} (اینترنت به سرور ناپایدار است)"
+                        break
+                    }
+                    kotlinx.coroutines.delay(3_000)
+                }
             }
         }
     }

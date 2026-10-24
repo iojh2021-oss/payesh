@@ -118,10 +118,15 @@ object DashboardLive {
                 delay(if (watch) 2_000 else 6_000)
             } catch (e: Exception) {
                 fails++
-                watch = false
-                setStreaming(ctx, false)
-                status.value = "خطای اتصال به سرور"
-                delay(if (fails < 5) 8_000 else 30_000)
+                sent.clear() // whatever was marked as sent may not have arrived: resend everything next time
+                if (fails >= 3) {
+                    watch = false
+                    setStreaming(ctx, false)
+                    status.value = "خطای اتصال به سرور"
+                } else {
+                    status.value = "اتصال ناپایدار؛ تلاش دوباره…"
+                }
+                delay(if (fails < 3) 3_000 else if (fails < 8) 8_000 else 30_000)
             }
         }
         setStreaming(ctx, false)
@@ -132,22 +137,21 @@ object DashboardLive {
         if (sent[key] != s) { sent[key] = s; body.put(key, v) }
     }
 
+    /** No disconnect(): letting HttpURLConnection keep the TLS connection alive avoids a slow handshake on every call. */
     private fun http(method: String, url: String, token: String, body: String?): JSONObject? {
         val c = URL(url).openConnection() as HttpURLConnection
-        try {
-            c.requestMethod = method
-            c.connectTimeout = 8_000; c.readTimeout = 12_000
-            c.setRequestProperty("Authorization", "Bearer $token")
-            if (body != null) {
-                c.doOutput = true
-                c.setRequestProperty("Content-Type", "application/json")
-                c.outputStream.use { it.write(body.toByteArray()) }
-            }
-            if (c.responseCode !in 200..299) return null
-            return JSONObject(c.inputStream.bufferedReader().readText())
-        } finally {
-            c.disconnect()
+        c.requestMethod = method
+        c.connectTimeout = 20_000; c.readTimeout = 40_000
+        c.setRequestProperty("Authorization", "Bearer $token")
+        if (body != null) {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/json")
+            c.outputStream.use { it.write(body.toByteArray()) }
         }
+        val code = c.responseCode
+        val text = (if (code in 200..299) c.inputStream else c.errorStream)?.use { it.bufferedReader().readText() } ?: ""
+        if (code !in 200..299) return null
+        return JSONObject(text)
     }
 
     // ---------------------------------------------------------------- sections
