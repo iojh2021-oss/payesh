@@ -53,6 +53,8 @@ object DashboardPrefs {
     fun url(ctx: Context) = p(ctx).getString("url", "") ?: ""
     fun token(ctx: Context) = p(ctx).getString("token", "") ?: ""
     fun name(ctx: Context) = p(ctx).getString("name", "") ?: ""
+    fun live(ctx: Context) = p(ctx).getBoolean("live", false)
+    fun setLive(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("live", on).apply()
     fun set(ctx: Context, on: Boolean, url: String, token: String, name: String) =
         p(ctx).edit().putBoolean("on", on).putString("url", url.trim().trimEnd('/'))
             .putString("token", token.trim()).putString("name", name.trim()).apply()
@@ -171,8 +173,25 @@ fun DashboardCard(ctx: Context) {
                     color = Muted, fontSize = 11.sp
                 )
             }
-            Toggle(on) { on = it; DashboardPrefs.set(ctx, it, url, token, name) }
+            Toggle(on) { on = it; DashboardPrefs.set(ctx, it, url, token, name); DashboardLive.ensure(ctx) }
         }
+        Spacer(Modifier.height(10.dp))
+        var live by remember { mutableStateOf(DashboardPrefs.live(ctx)) }
+        val streaming by DashboardLive.streaming.collectAsState()
+        val liveStatus by DashboardLive.status.collectAsState()
+        Row {
+            Column(Modifier.weight(1f)) {
+                Text("نمایش زندهٔ رابط در داشبورد", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    "فقط وقتی صفحهٔ همین گوشی در داشبورد باز است، همان چیزهایی را که اپ نشان می‌دهد (برنامه‌ها، دامنه‌ها، " +
+                        "یافته‌های آنتی‌ویروس، آمار) هر چند ثانیه می‌فرستد. فقط مشاهده است و اعلان دائمی نشان می‌دهد. " +
+                        "برای ترافیک زنده، برنامه باید در لیست اخیر باشد.",
+                    color = Muted, fontSize = 11.sp
+                )
+            }
+            Toggle(live) { live = it; DashboardPrefs.setLive(ctx, it); DashboardLive.ensure(ctx) }
+        }
+        if (live && liveStatus.isNotEmpty()) Text((if (streaming) "● " else "○ ") + liveStatus, color = if (streaming) Accent else Muted, fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(url, { url = it }, label = { Text("آدرس API (https://…)") }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
@@ -184,6 +203,7 @@ fun DashboardCard(ctx: Context) {
         AvBtn("ذخیره و ارسال همین حالا", true, Accent, Modifier.fillMaxWidth()) {
             DashboardPrefs.set(ctx, on, url, token, name)
             DashboardSync.sendNow(ctx)
+            DashboardLive.ensure(ctx)
         }
         if (res.isNotEmpty()) Text(res, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
     }

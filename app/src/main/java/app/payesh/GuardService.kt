@@ -163,6 +163,7 @@ class GuardService : Service() {
         }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
         if (tick % 100 == 50) DashboardSync.syncIfDue(this)
+        DashboardLive.ensure(this)
     }
 
     // ------------------------------------------------------------------ app installs

@@ -92,6 +92,8 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                 }
                 usageGranted.value = Fg.granted(ctx)
                 apps.value = build(Fg.foreground(ctx), now)
+                LiveBridge.apps = apps.value
+                LiveBridge.at = now
             }
         }
     }
