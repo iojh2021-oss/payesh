@@ -1,17 +1,17 @@
 {
   "schema": 2,
-  "version": 13,
-  "generated": "2026-10-25T04:40:25Z",
+  "version": 14,
+  "generated": "2026-10-26T13:01:36Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "1a5d93086dd24a336217a57d4725b79368ed809fbd6ebbe05736bcb328740252",
-      "size": 401989
+      "sha256": "cd1cd19cd2b8eb5555a5b2c7f5920e3e78c9961c41a452d22616546e49ffa57b",
+      "size": 402414
     }
   ],
   "counts": {
-    "hashes": 3250,
+    "hashes": 3255,
     "packages": 615,
     "certs": 473,
     "domains": 841,
@@ -24,7 +24,7 @@
       "name": "MalwareBazaar",
       "status": "ok",
       "count": 7,
-      "new": 2
+      "new": 5
     },
     {
       "name": "stalkerware-indicators",
