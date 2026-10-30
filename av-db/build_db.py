@@ -101,6 +101,42 @@ def parse_bazaar(text):
     return out
 
 
+def src_threatfox(key):
+    """-> (domains {host: family}, hashes {sha256: family}, status). ThreatFox's API only returns 7 days, so history is merged later."""
+    if not key:
+        return {}, {}, "skipped (no key)"
+    try:
+        req = urllib.request.Request(
+            "https://threatfox-api.abuse.ch/api/v1/",
+            data=json.dumps({"query": "get_iocs", "days": 7}).encode(),
+            headers={"Auth-Key": key, "Content-Type": "application/json", "User-Agent": "payesh-av-db"},
+        )
+        with urllib.request.urlopen(req, timeout=90) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {}, {}, "failed: %s" % str(e)[:60]
+    if data.get("query_status") != "ok":
+        return {}, {}, "failed: %s" % str(data.get("query_status"))[:40]
+    doms, hs = {}, {}
+    for e in data.get("data") or []:
+        try:
+            ioc = str(e.get("ioc", "")).strip().lower()
+            typ = str(e.get("ioc_type", ""))
+            mal = str(e.get("malware", "")).lower()
+            conf = int(e.get("confidence_level") or 0)
+            fam = clean_name("ThreatFox." + str(e.get("malware_printable") or "Malware").replace(" ", ""), "ThreatFox.Malware")
+            android = mal.startswith("apk.")
+            if typ == "domain":
+                # Android families: any decent-confidence domain. Others: only botnet C2 with high confidence.
+                if (android and conf >= 50) or (conf >= 75 and e.get("threat_type") == "botnet_cc"):
+                    doms[ioc] = fam
+            elif typ == "sha256_hash" and android and conf >= 50 and HEX64.match(ioc):
+                hs[ioc] = fam
+        except Exception:
+            continue
+    return doms, hs, "ok"
+
+
 def norm_cert(c):
     return str(c).replace(":", "").replace(" ", "").strip().lower()
 
@@ -191,6 +227,14 @@ def main():
         domains = {k: v for k, v in old.get("domains", {}).items()}
     sources.append({"name": "stalkerware-indicators", "status": st,
                     "count": len(sk_pk) + len(sk_ce) + len(sk_do) + len(sk_ha)})
+
+    # ThreatFox: C2 / payload domains and Android sample hashes; old ThreatFox domains stay (history), capped below
+    tf_dom, tf_hash, st = src_threatfox(os.environ.get("ABUSECH_AUTH_KEY", "").strip())
+    tf_old = {d: f for d, f in old.get("domains", {}).items() if str(f).startswith("ThreatFox.")}
+    domains.update(tf_old)
+    domains.update(tf_dom)
+    hashes.update(tf_hash)
+    sources.append({"name": "ThreatFox", "status": st, "count": len(tf_dom) + len(tf_hash), "history": len(tf_old)})
 
     hashes.update(custom.get("hashes", {}))
     packages.update(custom.get("packages", {}))

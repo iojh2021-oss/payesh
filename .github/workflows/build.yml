@@ -28,6 +28,18 @@ jobs:
         run: |
           cargo install cargo-ndk --locked
           cargo ndk -t arm64-v8a -t armeabi-v7a --platform 29 -o ../jniLibs build --release
+      - name: Bundle latest published AV database into the APK (best effort)
+        continue-on-error: true
+        run: |
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/${{ github.repository }}/av-db/av-db.json" -o /tmp/av-db.json
+          python3 - <<'PY'
+          import json, shutil
+          d = json.load(open('/tmp/av-db.json'))
+          assert d.get('schema') in (1, 2)
+          assert len(d.get('hashes', {})) > 100 and len(d.get('domains', {})) > 10
+          shutil.copy('/tmp/av-db.json', 'app/src/main/assets/av-db.json')
+          print('bundled AV database version', d.get('version'))
+          PY
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7

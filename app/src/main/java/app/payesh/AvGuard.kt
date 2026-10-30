@@ -21,6 +21,8 @@ object AvGuardState {
     val events = MutableStateFlow(0)        // file events seen since the service started
     val note = MutableStateFlow("—")        // last notification attempt
     val integrity = MutableStateFlow(0)     // number of system-integrity indicators found
+    val budget = MutableStateFlow(0)        // max folders the watcher is allowed to use
+    val mediaEvents = MutableStateFlow(0)   // new files reported by the MediaStore observer
 }
 
 /**
@@ -39,16 +41,30 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
 
     fun count(): Int = synchronized(this) { if (nh != 0L) nativeDirs.size else observers.size }
 
+    /** How many folders we may watch: half of the system inotify limit (read at runtime), within sane bounds. */
+    private val budget: Int by lazy {
+        val sys = try { File("/proc/sys/fs/inotify/max_user_watches").readText().trim().toInt() } catch (_: Exception) { 0 }
+        if (sys > 0) (sys / 2).coerceIn(300, 6_000) else 1_500
+    }
+
+    private fun forbidden(dir: File): Boolean {
+        val p = dir.path
+        // other apps' private folders are not accessible to us since Android 11 (even with all-files access)
+        return p.contains("/Android/data") || p.contains("/Android/obb")
+    }
+
     @Synchronized
     fun start(roots: List<File>) {
         if (nh == 0L && observers.isEmpty() && NativeEngine.ok) startNative()
+        // pass 1: priority folders first, so they can never be starved by the budget
+        for (r in roots) for (d in Av.SMART_DIRS) addTree(File(r, d), 5)
+        // pass 2: every other visible folder (hidden ones included: malware likes them), then the storage root itself
         for (r in roots) {
-            for (d in Av.SMART_DIRS) addTree(File(r, d), 4)
-            // files dropped straight into the storage root and into apps' own top-level folders (e.g. /sdcard/SomeApp)
+            r.listFiles()?.filter { it.isDirectory && it.name != "Android" }?.forEach { addTree(it, 3) }
             addTree(r, 0)
-            r.listFiles()?.filter { it.isDirectory && it.name != "Android" && !it.name.startsWith(".") }?.forEach { addTree(it, 0) }
         }
         AvGuardState.watched.value = count()
+        AvGuardState.budget.value = budget
     }
 
     fun stop() {
@@ -118,33 +134,38 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
 
     @Synchronized
     private fun addTree(dir: File, depth: Int) {
-        if (!dir.isDirectory || count() >= 300 || dir.name in Av.SKIP_DIRS || dir.path in observers || dir.path in nativeDirs) return
-        if (nh != 0L) {
-            if (NativeEngine.watchAdd(nh, dir.path) < 0) return
-            nativeDirs[dir.path] = depth
-        } else {
-            val o = object : FileObserver(dir, mask) {
-                override fun onEvent(event: Int, path: String?) {
-                    if (path == null) return
-                    val f = File(dir, path)
-                    if (f.isDirectory) {
-                        if (depth > 0) addTree(f, depth - 1)
-                        AvGuardState.watched.value = observers.size
-                        return
+        if (!dir.isDirectory || dir.name in Av.SKIP_DIRS || forbidden(dir)) return
+        val watched = dir.path in observers || dir.path in nativeDirs
+        if (!watched) {
+            if (count() >= budget) return
+            if (nh != 0L) {
+                if (NativeEngine.watchAdd(nh, dir.path) < 0) return
+                nativeDirs[dir.path] = depth
+            } else {
+                val o = object : FileObserver(dir, mask) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null) return
+                        val f = File(dir, path)
+                        if (f.isDirectory) {
+                            if (depth > 0) addTree(f, depth - 1)
+                            AvGuardState.watched.value = observers.size
+                            return
+                        }
+                        if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
+                        val now = System.currentTimeMillis()
+                        synchronized(recent) {
+                            if ((recent[f.path] ?: 0L) > now - 3_000) return
+                            recent[f.path] = now
+                            if (recent.size > 500) recent.clear()
+                        }
+                        onFile(f)
                     }
-                    if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
-                    val now = System.currentTimeMillis()
-                    synchronized(recent) {
-                        if ((recent[f.path] ?: 0L) > now - 3_000) return
-                        recent[f.path] = now
-                        if (recent.size > 500) recent.clear()
-                    }
-                    onFile(f)
                 }
+                o.startWatching()
+                observers[dir.path] = o
             }
-            o.startWatching()
-            observers[dir.path] = o
         }
+        // also for folders that are already watched: a periodic start() then finds sub-folders that were skipped earlier
         if (depth > 0) dir.listFiles()?.filter { it.isDirectory }?.forEach { addTree(it, depth - 1) }
     }
 }

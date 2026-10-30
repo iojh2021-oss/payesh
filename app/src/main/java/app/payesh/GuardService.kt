@@ -12,8 +12,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.MediaStore
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
@@ -51,7 +55,10 @@ class GuardService : Service() {
     private var work: ExecutorService? = null
     private var recv: BroadcastReceiver? = null
     private var watcher: DownloadWatcher? = null
-    private val handled: MutableSet<String> = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val recentKeys = ConcurrentHashMap<String, Long>()   // normalized path -> last time handled
+    private var mediaObs: ContentObserver? = null
+    @Volatile private var mediaPending = false
+    @Volatile private var mediaSince = 0L                         // MediaStore DATE_ADDED (seconds) already processed
     private val recentApks = ConcurrentLinkedDeque<Pair<String, Long>>()
     @Volatile private var lastInstallerAlert = 0L
     @Volatile private var lastPoll = 0L
@@ -121,6 +128,7 @@ class GuardService : Service() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED) else registerReceiver(r, f)
         recv = r
         startWatcher()
+        startMediaObserver()
         sched = Executors.newSingleThreadScheduledExecutor().also {
             it.scheduleWithFixedDelay({
                 try { loop() } catch (e: Exception) { Plog.w("guard loop failed: $e") }
@@ -134,6 +142,8 @@ class GuardService : Service() {
         sched?.shutdownNow(); sched = null
         work?.shutdownNow(); work = null
         watcher?.stop(); watcher = null
+        try { mediaObs?.let { contentResolver.unregisterContentObserver(it) } } catch (_: Exception) {}
+        mediaObs = null
         try { recv?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         recv = null
     }
@@ -152,16 +162,17 @@ class GuardService : Service() {
     private fun loop() {
         tick++
         checkInstaller()
-        if (tick % 7 == 0) pollFiles()
+        if (tick % 7 == 0) { pollFiles(); work?.execute { mediaScan() } }
         if (tick % 5 == 0 && (watcher?.count() ?: 0) == 0 && Dedup.hasAccess(this)) startWatcher()
         if (tick == 5) integrityCheck()
         if (tick % 100 == 0) {
             behaviorCheck()
             integrityCheck()
             watcher?.start(Dedup.roots(this)) // also picks up newly created folders
-            Plog.w("guard alive: watching=${watcher?.count() ?: 0} allFiles=${Dedup.hasAccess(this)} usage=${Fg.granted(this)} events=${AvGuardState.events.value}")
+            Plog.w("guard alive: watching=${watcher?.count() ?: 0} allFiles=${Dedup.hasAccess(this)} usage=${Fg.granted(this)} events=${AvGuardState.events.value} budget=${AvGuardState.budget.value} media=${AvGuardState.mediaEvents.value}")
         }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
+        if (tick == 40 || tick % 1200 == 100) periodicScan()
         if (tick % 100 == 50) DashboardSync.syncIfDue(this)
         DashboardLive.ensure(this)
     }
@@ -226,11 +237,18 @@ class GuardService : Service() {
 
     // ------------------------------------------------------------------ downloads
 
+    /** Same download -> one event: ".pending-<n>-name.apk" and "name.apk" are treated as the same file. */
+    private fun keyOf(f: File) = (f.parent ?: "") + "/" + f.name.replace(pendingRe, "")
+
     private fun onNewFile(f: File) {
         val ext = f.name.substringAfterLast('.', "").lowercase()
         if (ext in TEMP_EXT) return
-        if (!handled.add(f.path + "|" + f.lastModified())) return
-        if (handled.size > 2000) handled.clear()
+        val now = System.currentTimeMillis()
+        val key = keyOf(f)
+        val last = recentKeys[key]
+        if (last != null && now - last < 45_000) return
+        recentKeys[key] = now
+        if (recentKeys.size > 2000) recentKeys.clear()
         AvGuardState.events.value = AvGuardState.events.value + 1
         if (ext in APK_EXT) Plog.w("guard: new file ${f.name}")
         work?.execute { handleFile(f, ext) }
@@ -246,7 +264,7 @@ class GuardService : Service() {
                 val clean = File(f0.parentFile, f0.name.replace(pendingRe, ""))
                 var tries = 0
                 while (tries < 10 && !clean.isFile) { Thread.sleep(2_000); tries++ }
-                if (clean.isFile) f = clean
+                if (clean.isFile) f = clean else { recentKeys.remove(keyOf(f0)); return }
             }
             val ext = f.name.substringAfterLast('.', "").lowercase()
             if (!f.isFile || f.length() < 64) return
@@ -298,6 +316,66 @@ class GuardService : Service() {
         for (r in Dedup.roots(this)) walk(r, 1) { f ->
             if (f.lastModified() > since && f.name.substringAfterLast('.', "").lowercase() in APK_EXT) onNewFile(f)
         }
+    }
+
+    // ------------------------------------------------------------------ MediaStore observer
+
+    /**
+     * Catches new files anywhere the system indexes them (downloads by any browser / store / app), including
+     * folders the inotify budget did not cover. Photos, videos and audio are skipped to keep it cheap.
+     */
+    private fun startMediaObserver() {
+        if (!Dedup.hasAccess(this)) return
+        mediaSince = System.currentTimeMillis() / 1000 - 5
+        val o = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                if (mediaPending) return
+                mediaPending = true
+                work?.execute {
+                    try { Thread.sleep(1_500); mediaScan() } catch (_: Exception) {} finally { mediaPending = false }
+                }
+            }
+        }
+        try {
+            contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, o)
+            mediaObs = o
+            Plog.w("guard: MediaStore observer active")
+        } catch (e: Exception) {
+            Plog.w("guard: MediaStore observer failed: $e")
+        }
+    }
+
+    private fun mediaScan() {
+        if (!Dedup.hasAccess(this)) return
+        val since = mediaSince - 2
+        var maxAdded = mediaSince
+        try {
+            val cols = arrayOf(MediaStore.Files.FileColumns.DATA, MediaStore.Files.FileColumns.DATE_ADDED, MediaStore.Files.FileColumns.MIME_TYPE)
+            // Bundle form: newer Android versions reject a "LIMIT" hidden inside the sort-order string
+            val q = android.os.Bundle().apply {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, MediaStore.Files.FileColumns.DATE_ADDED + " >= ?")
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(since.toString()))
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, MediaStore.Files.FileColumns.DATE_ADDED + " DESC")
+                putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 100)
+            }
+            contentResolver.query(MediaStore.Files.getContentUri("external"), cols, q, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val path = c.getString(0) ?: continue
+                    val added = c.getLong(1)
+                    val mime = c.getString(2) ?: ""
+                    if (added > maxAdded) maxAdded = added
+                    if (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) continue
+                    if (path.contains("/Android/data/") || path.contains("/Android/obb/")) continue
+                    val f = File(path)
+                    if (!f.isFile) continue
+                    AvGuardState.mediaEvents.value = AvGuardState.mediaEvents.value + 1
+                    onNewFile(f)
+                }
+            }
+        } catch (e: Exception) {
+            Plog.w("media scan failed: $e")
+        }
+        mediaSince = maxAdded
     }
 
     // ------------------------------------------------------------------ installer screen
@@ -380,6 +458,81 @@ class GuardService : Service() {
                 txt + "\nاین بررسی در سطح برنامه است و روت‌کیت‌های کرنل را نمی‌تواند ببیند.", p[0] == "H"
             )
         }
+    }
+
+    // ------------------------------------------------------------------ periodic scan of installed apps
+
+    private val periodicRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Installs are checked when they happen; this re-checks what is already installed: new / updated apps, and EVERY
+     * third-party app again whenever the threat database version changes (new signatures can flag old apps).
+     */
+    private fun periodicScan() {
+        if (!periodicRunning.compareAndSet(false, true)) return
+        Thread({
+            try { doPeriodicScan() } catch (e: Exception) { Plog.w("periodic scan failed: $e") } finally { periodicRunning.set(false) }
+        }, "guard-periodic").also { it.isDaemon = true; it.priority = Thread.MIN_PRIORITY; it.start() }
+    }
+
+    private fun doPeriodicScan() {
+        val sp = getSharedPreferences("guard_periodic", Context.MODE_PRIVATE)
+        val dbVer = AvDbStore.load(this).version
+        val sameDb = sp.getInt("db", -1) == dbVer
+        val prevSeen = HashMap<String, String>()
+        for (x in sp.getStringSet("seen", null) ?: emptySet()) {
+            val i = x.lastIndexOf('|')
+            if (i > 0) prevSeen[x.substring(0, i)] = x.substring(i + 1)
+        }
+        val notified = HashSet(sp.getStringSet("notified", null) ?: emptySet())
+        val e = AvEnv(this)
+        @Suppress("DEPRECATION")
+        val all = try { packageManager.getInstalledPackages(0) } catch (_: Exception) { return }
+        val nowSeen = HashMap<String, String>()
+        var checked = 0
+        val suspicious = ArrayList<String>()
+        for (info in all) {
+            if (sched == null) return // service stopped
+            val pkg = info.packageName
+            val flags = info.applicationInfo?.flags ?: 0
+            if (pkg == e.self || (flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 || pkg in e.trusted) continue
+            val stamp = info.lastUpdateTime.toString()
+            nowSeen[pkg] = stamp
+            if (sameDb && prevSeen[pkg] == stamp) continue
+            try {
+                @Suppress("DEPRECATION")
+                val pi = packageManager.getPackageInfo(pkg, Av.FLAGS)
+                val label = pi.applicationInfo?.loadLabel(packageManager)?.toString() ?: pkg
+                val f = Av.analyze(e, pi, label, true, true)
+                checked++
+                if (f.level > 0) {
+                    val key = "$pkg|$stamp|${f.level}|$dbVer"
+                    if (notified.add(key)) {
+                        if (f.level == 2) {
+                            AvNotify.post(
+                                this, pkg.hashCode(), "⚠ برنامهٔ خطرناک در بررسی دوره‌ای",
+                                "$label (ریسک ${f.score})\n" + f.reasons.take(4).joinToString("\n") { "• $it" }, true
+                            )
+                        } else suspicious.add(label)
+                    }
+                }
+            } catch (ex: Exception) {
+                Plog.w("periodic: $pkg failed: $ex")
+            }
+            try { Thread.sleep(150) } catch (_: InterruptedException) { return } // stay gentle on CPU / battery
+        }
+        if (suspicious.isNotEmpty()) {
+            AvNotify.post(
+                this, 7, "${suspicious.size} برنامهٔ مشکوک در بررسی دوره‌ای",
+                suspicious.take(6).joinToString("\n") { "• $it" } + "\nجزئیات را در تب آنتی‌ویروس (اسکن کامل) ببین.", false
+            )
+        }
+        sp.edit()
+            .putInt("db", dbVer)
+            .putStringSet("seen", nowSeen.map { "${it.key}|${it.value}" }.toSet())
+            .putStringSet("notified", notified.toList().takeLast(500).toSet())
+            .putLong("last", System.currentTimeMillis()).apply()
+        Plog.w("periodic scan: checked=$checked suspicious=${suspicious.size} db=v$dbVer")
     }
 
     // ------------------------------------------------------------------ dangerous capability grants
