@@ -143,6 +143,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         item { GuardCard(ctx) }
         item { AppLockCard(ctx) }
         item { DashboardCard(ctx) }
+        item { NetScanCard(ctx) }
         item {
             val last = counts.lastScan
             val ago = if (last == 0L) "—" else {
@@ -539,6 +540,99 @@ private fun CheckRow(ok: Boolean, text: String, onFix: (() -> Unit)?) {
 }
 
 /** Real-time protection: what is being watched, prerequisites, and the "ask before scan" switch. */
+@Composable
+fun NetScanCard(ctx: Context) {
+    NetScan.init(ctx)
+    var on by remember { mutableStateOf(NetScan.on) }
+    val rep by NetScan.report.collectAsState()
+    val vpn by Tracker.running.collectAsState()
+    var all by remember { mutableStateOf(false) }
+    LaunchedEffect(on) {
+        while (on) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                try { NetScan.scan(ctx, false) } catch (_: Exception) {}
+            }
+            delay(4000)
+        }
+    }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("بازرس شبکه (تحلیل عمیق IP و پورت)", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    "نوع پروتکل هر IP:پورت و نوع رمزنگاری‌اش را تشخیص می‌دهد (مثلاً 1.1.1.1:53 = DNS بدون رمزنگاری؛ TLS 1.3 با AES-256؛ QUIC؛ SSH...) و ارتباط‌های مشکوک برنامه‌ها، به‌ویژه در پس‌زمینه، را گزارش می‌کند.",
+                    color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                )
+            }
+            Toggle(on) { on = it; NetScan.setOn(ctx, it) }
+        }
+        if (!on) return@Column
+        if (!vpn) Text(
+            "برای تحلیل، پایش ترافیک (VPN) باید روشن باشد؛ بدون آن داده‌ای دیده نمی‌شود.",
+            color = Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        val r = rep
+        if (r == null) {
+            Text("در حال جمع‌آوری... چند ثانیه صبر کن.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            return@Column
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AvStat("مقصد", "${r.total}", Violet, Modifier.weight(1f))
+            AvStat("رمزنگاری‌شده", "${r.encrypted}", Accent, Modifier.weight(1f))
+            AvStat("بدون رمز", "${r.plain}", if (r.plain == 0) Accent else Orange, Modifier.weight(1f))
+            AvStat("نامشخص", "${r.unknown}", Muted, Modifier.weight(1f))
+        }
+        val bad = r.items.count { it.level >= 2 }
+        Text(
+            (if (bad == 0) "مورد مشکوک یا خطرناکی دیده نشد." else "$bad مورد نیاز به بررسی دارد.") +
+                " نمونه‌برداری‌شده: ${r.sampled} از ${r.total}" +
+                (if (r.bgKnown) " • برنامهٔ فعال در پس‌زمینه: ${r.bgApps}" else " • برای تشخیص پس‌زمینه، Usage access را بده"),
+            color = if (bad == 0) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        Text(
+            "اتصال‌هایی که قبل از روشن‌کردن این کلید برقرار شده‌اند فقط از روی پورت حدس زده می‌شوند؛ برای تحلیل کامل چند دقیقه صبر کن یا آن برنامه را دوباره باز کن. محتوای ترافیک رمزنگاری‌شده خوانده نمی‌شود.",
+            color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+        val shown = if (all) r.items else r.items.take(15)
+        for (f in shown) ScanRow(f)
+        if (r.items.size > 15) {
+            Spacer(Modifier.height(6.dp))
+            AvBtn(if (all) "نمایش کمتر" else "نمایش همه (${r.items.size})", false, Accent, Modifier.fillMaxWidth()) { all = !all }
+        }
+        Spacer(Modifier.height(6.dp))
+        AvBtn("کپی گزارش کامل", true, Accent, Modifier.fillMaxWidth()) {
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("payesh-net-report", NetScan.text()))
+        }
+    }
+}
+
+@Composable
+private fun ScanRow(f: ScanFinding) {
+    val col = when (f.level) { 3 -> Danger; 2 -> Orange; 1 -> Violet; else -> Accent }
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(16.dp))
+            .background(Color.White.copy(alpha = .05f)).padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(col))
+            Spacer(Modifier.width(8.dp))
+            Text(f.app + if (f.bg) "  (پس‌زمینه)" else "", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text(fmt(f.up + f.down), color = Muted, fontSize = 11.sp)
+        }
+        Text(
+            "${f.proto} ${f.ip}:${f.port}" + (f.host?.let { " • $it" } ?: ""),
+            color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp)
+        )
+        Text(
+            f.service + " • " + f.crypto,
+            color = when (f.enc) { 1 -> Accent; 2 -> Orange; else -> Color.White }, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)
+        )
+        for (n in f.notes) Text("• $n", color = col, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
 @Composable
 fun GuardCard(ctx: Context) {
     val enabled by AvState.enabled.collectAsState()

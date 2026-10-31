@@ -93,6 +93,7 @@ class PayeshVpnService : VpnService() {
     }
 
     override fun onCreate() {
+        NetScan.init(this)
         super.onCreate()
         Plog.init(this)
         if (!crashHook) {
@@ -426,7 +427,7 @@ class PayeshVpnService : VpnService() {
             lastAct = System.currentTimeMillis()
             try {
                 ds.send(DatagramPacket(d, off, len))
-                conn?.let { it.up.addAndGet(len.toLong()); it.touch() }
+                conn?.let { it.up.addAndGet(len.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, true, d, off, len, dp) }
                 if (dp == 53) Sniff.dnsQuery(d.copyOfRange(off, off + len))?.let { conn?.url = "DNS: $it" }
             } catch (_: Exception) { close() }
         }
@@ -439,7 +440,7 @@ class PayeshVpnService : VpnService() {
                     ds.receive(p)
                     lastAct = System.currentTimeMillis()
                     if (dp == 53) Sniff.dns(buf.copyOf(p.length))
-                    conn?.let { it.down.addAndGet(p.length.toLong()); it.touch() }
+                    conn?.let { it.down.addAndGet(p.length.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, false, buf, 0, p.length, dp) }
                     if (p.length <= MTU - 28) writeTun(Pkt.udp(rem, cli, dp, sp, buf, p.length))
                 }
             } catch (_: Exception) {
@@ -531,7 +532,7 @@ class PayeshVpnService : VpnService() {
                         send(Pkt.PSH or Pkt.ACK, mySeq, clientNext, buf, 0, n)
                         mySeq = (mySeq + n) and Pkt.MASK
                     }
-                    conn?.let { it.down.addAndGet(n.toLong()); it.touch() }
+                    conn?.let { it.down.addAndGet(n.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, false, buf, 0, n, dp) }
                 }
             } catch (_: Exception) {
             }
@@ -587,6 +588,7 @@ class PayeshVpnService : VpnService() {
 
         private fun inspect(d: ByteArray) {
             val c = conn ?: return
+            if (NetScan.on) NetScan.feed(c, true, d, 0, d.size, dp)
             if (dp == 443 && c.domain == null && tries < 4) {
                 tries++
                 acc += d

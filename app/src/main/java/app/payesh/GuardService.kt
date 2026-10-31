@@ -127,6 +127,7 @@ class GuardService : Service() {
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED) else registerReceiver(r, f)
         recv = r
+        NetScan.init(this)
         startWatcher()
         startMediaObserver()
         sched = Executors.newSingleThreadScheduledExecutor().also {
@@ -173,6 +174,7 @@ class GuardService : Service() {
         }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
         if (tick == 40 || tick % 1200 == 100) periodicScan()
+        if (NetScan.on && tick % 10 == 5) try { NetScan.scan(this, true) } catch (e: Exception) { Plog.w("netscan failed: $e") }
         if (tick % 100 == 50) DashboardSync.syncIfDue(this)
         DashboardLive.ensure(this)
     }
