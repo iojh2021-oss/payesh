@@ -590,6 +590,10 @@ fun NetScanCard(ctx: Context) {
                 (if (r.bgKnown) " • برنامهٔ فعال در پس‌زمینه: ${r.bgApps}" else " • برای تشخیص پس‌زمینه، Usage access را بده"),
             color = if (bad == 0) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
         )
+        if (r.learning > 0) Text(
+            "در حال یادگیری رفتار عادی ${r.learning} برنامه (۴۸ ساعت اول هر برنامه). بعد از آن، دامنهٔ تازه و ارسال غیرعادی در پس‌زمینه هشدار می‌دهد.",
+            color = Violet, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
+        )
         Text(
             "اتصال‌هایی که قبل از روشن‌کردن این کلید برقرار شده‌اند فقط از روی پورت حدس زده می‌شوند؛ برای تحلیل کامل چند دقیقه صبر کن یا آن برنامه را دوباره باز کن. محتوای ترافیک رمزنگاری‌شده خوانده نمی‌شود.",
             color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
@@ -600,6 +604,8 @@ fun NetScanCard(ctx: Context) {
             Spacer(Modifier.height(6.dp))
             AvBtn(if (all) "نمایش کمتر" else "نمایش همه (${r.items.size})", false, Accent, Modifier.fillMaxWidth()) { all = !all }
         }
+        Spacer(Modifier.height(6.dp))
+        AvBtn("پاک‌کردن رفتار یادگرفته‌شده", false, Orange, Modifier.fillMaxWidth()) { NetScan.resetBaseline(ctx) }
         Spacer(Modifier.height(6.dp))
         AvBtn("کپی گزارش کامل", true, Accent, Modifier.fillMaxWidth()) {
             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager

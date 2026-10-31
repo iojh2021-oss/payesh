@@ -31,7 +31,8 @@ class ScanFinding(
 
 class ScanReport(
     val time: Long, val total: Int, val encrypted: Int, val plain: Int, val unknown: Int,
-    val bgApps: Int, val bgKnown: Boolean, val sampled: Int, val items: List<ScanFinding>
+    val bgApps: Int, val bgKnown: Boolean, val sampled: Int, val items: List<ScanFinding>,
+    val learning: Int = 0
 )
 
 /**
@@ -64,7 +65,7 @@ object NetScan {
         ctx.applicationContext.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("on", v).apply()
         if (!v) {
             for (u in Tracker.uids.values) for (c in u.conns.values) c.probe = null
-            synchronized(lock) { notified.clear() }
+            synchronized(lock) { notified.clear(); saveBase(ctx, true) }
             report.value = null
         }
     }
@@ -305,6 +306,86 @@ object NetScan {
         p.tlsChosen = ver
     }
 
+    // ------------------------------------------------------------------ learned behaviour (per app)
+    // Which domains an app normally talks to, and how much it normally uploads while in the background.
+    // Stored only on this phone (SharedPreferences "net_baseline"). The first 48 hours per app are learning only.
+
+    private const val BPREF = "net_baseline"
+    private const val LEARN_MS = 48L * 3600_000
+    private val domCache = HashMap<String, MutableSet<String>>()               // pkg -> known registrable domains
+    private val firstSeen = HashMap<String, Long>()                            // pkg -> first time the inspector saw it
+    private val bgDays = HashMap<String, java.util.TreeMap<String, Long>>()    // pkg -> day -> background upload bytes
+    private val newSeen = HashMap<String, Long>()                              // "pkg|domain" -> when it first appeared (after learning)
+    private val lastUp = HashMap<String, Long>()
+    private var dirty = false
+    private var savedAt = 0L
+    private var baseLoaded = false
+
+    private fun e2ld(host: String): String? {
+        val h = host.lowercase().trimEnd('.')
+        if (!h.contains('.') || h.all { it.isDigit() || it == '.' }) return null
+        val l = h.split('.')
+        if (l.size < 2) return null
+        val sld = setOf("co", "com", "org", "net", "gov", "ac", "edu", "or", "ne", "go")
+        return if (l.size >= 3 && l.last().length == 2 && l[l.size - 2] in sld) l.takeLast(3).joinToString(".") else l.takeLast(2).joinToString(".")
+    }
+
+    private fun loadBase(ctx: Context) {
+        if (baseLoaded) return
+        baseLoaded = true
+        val all = ctx.applicationContext.getSharedPreferences(BPREF, Context.MODE_PRIVATE).all
+        for ((k, v) in all) {
+            try {
+                when {
+                    k.startsWith("d:") && v is Set<*> -> domCache[k.substring(2)] = LinkedHashSet(v.filterIsInstance<String>())
+                    k.startsWith("t:") && v is Long -> firstSeen[k.substring(2)] = v
+                    k.startsWith("b:") && v is String -> {
+                        val m = java.util.TreeMap<String, Long>()
+                        for (part in v.split(';')) {
+                            val i = part.indexOf('=')
+                            if (i > 0) m[part.substring(0, i)] = part.substring(i + 1).toLongOrNull() ?: 0L
+                        }
+                        bgDays[k.substring(2)] = m
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun saveBase(ctx: Context, force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!dirty || (!force && now - savedAt < 120_000)) return
+        val e = ctx.applicationContext.getSharedPreferences(BPREF, Context.MODE_PRIVATE).edit()
+        for ((p, set) in domCache) e.putStringSet("d:$p", set.toList().takeLast(400).toSet())
+        for ((p, t) in firstSeen) e.putLong("t:$p", t)
+        for ((p, m) in bgDays) e.putString("b:$p", m.entries.toList().takeLast(15).joinToString(";") { it.key + "=" + it.value })
+        e.apply()
+        dirty = false
+        savedAt = now
+    }
+
+    fun resetBaseline(ctx: Context) {
+        synchronized(lock) {
+            domCache.clear(); firstSeen.clear(); bgDays.clear(); newSeen.clear(); lastUp.clear(); dirty = false
+            ctx.applicationContext.getSharedPreferences(BPREF, Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    /** (0 normal / 1 unusual / 2 very unusual, typical daily background upload). Needs 3 earlier days of history. */
+    private fun anomaly(pkg: String, today: String, todayBytes: Long): Pair<Int, Long> {
+        val m = bgDays[pkg] ?: return 0 to 0L
+        val prev = m.filterKeys { it < today }.values.toList()
+        if (prev.size < 3) return 0 to 0L
+        val med = prev.sorted()[prev.size / 2]
+        val thr = maxOf(5L * 1024 * 1024, 4 * maxOf(med, 512L * 1024))
+        val lv = when {
+            todayBytes > 3 * thr && todayBytes > 20L * 1024 * 1024 -> 2
+            todayBytes > thr -> 1
+            else -> 0
+        }
+        return lv to med
+    }
+
     // ------------------------------------------------------------------ report
 
     private fun appOf(ctx: Context, uid: Int): Pair<String, String?> = labels.getOrPut(uid) {
@@ -335,6 +416,39 @@ object NetScan {
             if (now - fgAt > 15_000) { fg = try { Fg.foreground(ctx) } catch (_: Exception) { null }; fgAt = now }
             val fgSet = fg
             val old = Tracker.sessionStart.let { it > 0 && now - it > 120_000 }
+            loadBase(ctx)
+            val today = java.time.LocalDate.now().toString()
+            val selfUid = ctx.applicationInfo.uid
+            val bgToday = HashMap<Int, Long>()
+            val topConn = HashMap<Int, String>()
+            val anomalies = HashMap<Int, Pair<Int, Long>>()
+            val learnPk = HashSet<String>()
+            if (lastUp.size > 5000) lastUp.clear()
+            for ((uid, us) in Tracker.uids) {
+                val pkg = appOf(ctx, uid).second
+                val bg0 = fgSet != null && (pkg == null || pkg !in fgSet) && uid != selfUid
+                var best = -1L
+                for (c in us.conns.values) {
+                    if (c.proto == "ICMP") continue
+                    val k = "$uid|${c.proto}|${c.ip}|${c.port}"
+                    val u = c.up.get()
+                    val prev = lastUp.put(k, u)
+                    // the first observation of a connection counts nothing: we do not know when those bytes were sent
+                    val delta = if (prev == null) 0L else if (u >= prev) u - prev else u
+                    if (bg0 && delta > 0 && pkg != null) {
+                        val m = bgDays.getOrPut(pkg) { java.util.TreeMap<String, Long>() }
+                        m[today] = (m[today] ?: 0L) + delta
+                        dirty = true
+                    }
+                    if (u > best) { best = u; topConn[uid] = k }
+                }
+                if (pkg != null) {
+                    val t = bgDays[pkg]?.get(today) ?: 0L
+                    bgToday[uid] = t
+                    val an = anomaly(pkg, today, t)
+                    if (an.first > 0) anomalies[uid] = an
+                }
+            }
             val items = ArrayList<ScanFinding>()
             var enc = 0; var plain = 0; var unk = 0; var sampled = 0
             val bgSet = HashSet<Int>()
@@ -353,6 +467,24 @@ object NetScan {
                     fun note(l: Int, t: String) { notes.add(t); if (l > level) level = l }
                     val host = c.domain ?: Tracker.dns[c.ip]
                     val local = isLocal(c.ip)
+                    val ckey = "$uid|${c.proto}|${c.ip}|${c.port}"
+                    var newDom: String? = null
+                    if (pkg != null && host != null && !local) {
+                        val d = e2ld(host)
+                        if (d != null) {
+                            val first = firstSeen.getOrPut(pkg) { dirty = true; now }
+                            if (now - first < LEARN_MS) learnPk.add(pkg)
+                            val known = domCache.getOrPut(pkg) { LinkedHashSet<String>() }
+                            if (d !in known) {
+                                if (now - first >= LEARN_MS && bg) newSeen.putIfAbsent("$pkg|$d", now)
+                                known.add(d)
+                                if (known.size > 400) { val itr = known.iterator(); itr.next(); itr.remove() }
+                                dirty = true
+                            }
+                            val ts = newSeen["$pkg|$d"]
+                            if (ts != null && now - ts < 6L * 3600_000) newDom = d
+                        }
+                    }
 
                     // ---- what is it, and how is it protected
                     var service: String; var crypto: String; var e: Int
@@ -437,25 +569,38 @@ object NetScan {
                     if (bg && up > 20L * 1024 * 1024) note(2, "ارسال حجیم در پس‌زمینه: ${fmt(up)} از اول نشست.")
                     else if (bg && up > 2L * 1024 * 1024) note(1, "ارسال قابل‌توجه در پس‌زمینه: ${fmt(up)}.")
 
+                    if (newDom != null) {
+                        if (up >= 1024L * 1024) note(2, "هشدار رفتاری: ارسال ${fmt(up)} به دامنهٔ تازه $newDom از برنامه‌ای در پس‌زمینه.")
+                        else note(1, "دامنهٔ تازه برای این برنامه: $newDom (تا امروز در رفتار عادی‌اش دیده نشده بود).")
+                    }
+                    if (pkg != null && topConn[uid] == ckey) {
+                        anomalies[uid]?.let { (lv, med) ->
+                            val t = fmt(bgToday[uid] ?: 0L)
+                            if (lv == 2) note(2, "هشدار رفتاری: ارسال پس‌زمینهٔ امروز ($t) چند برابر حد معمول این برنامه است (معمولاً حدود ${fmt(med)}).")
+                            else note(1, "ارسال پس‌زمینهٔ امروز ($t) بیشتر از حد معمول این برنامه است (معمولاً حدود ${fmt(med)}).")
+                        }
+                    }
+
                     items.add(ScanFinding("$uid|${c.proto}|${c.ip}|$port", uid, label, pkg, c.proto, c.ip, port, host, service, crypto, e, level, notes, up, down, bg, p != null && (p.sUp > 0 || p.sDown > 0)))
                 }
             }
             items.sortWith(compareByDescending<ScanFinding> { it.level }.thenByDescending { it.bg }.thenByDescending { it.up + it.down })
             val shown = if (items.size > 200) items.subList(0, 200).toList() else items
-            report.value = ScanReport(now, items.size, enc, plain, unk, bgSet.size, fgSet != null, sampled, shown)
+            report.value = ScanReport(now, items.size, enc, plain, unk, bgSet.size, fgSet != null, sampled, shown, learnPk.size)
 
             if (notify) {
                 var sent = 0
                 for (f in items) {
-                    if (f.level < 3 || sent >= 3) continue
-                    if (!notified.add(f.key + "|" + f.notes.firstOrNull())) continue
+                    if ((f.level < 3 && f.notes.none { it.startsWith("هشدار رفتاری") }) || sent >= 3) continue
+                    if (!notified.add(f.key + "|" + f.notes.firstOrNull()?.take(24) + "|" + today)) continue
                     sent++
                     AvNotify.post(
-                        ctx, ("netscan:" + f.key).hashCode(), "بازرس شبکه: ارتباط خطرناک",
+                        ctx, ("netscan:" + f.key).hashCode(), if (f.level >= 3) "بازرس شبکه: ارتباط خطرناک" else "بازرس شبکه: رفتار غیرعادی",
                         "${f.app} ← ${f.host ?: f.ip}:${f.port}\n" + f.notes.take(2).joinToString("\n") { "• $it" }, true
                     )
                 }
             }
+            saveBase(ctx, false)
         }
     }
 
