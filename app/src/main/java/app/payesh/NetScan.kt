@@ -394,7 +394,9 @@ object NetScan {
                         crypto = if (p == null || (p.sUp == 0 && p.sDown == 0)) "نمونه‌برداری نشده (اتصال قبل از روشن‌شدن بازرس برقرار شده؛ فقط طبق پورت)"
                         else "محتوای کافی برای تشخیص دریافت نشد"
                     }
-                    if (RESOLVERS.containsKey(c.ip) && port == 53) note(0, "برنامه مستقیم از DNS عمومی ${RESOLVERS[c.ip]} استفاده می‌کند و DNS سیستم را دور می‌زند.")
+                    // 1.1.1.1 and 8.8.8.8 are the DNS servers the Payesh VPN itself hands to every app, so they are not a bypass
+                    if (RESOLVERS.containsKey(c.ip) && port == 53 && c.ip != "1.1.1.1" && c.ip != "8.8.8.8") note(0, "برنامه مستقیم از DNS عمومی ${RESOLVERS[c.ip]} استفاده می‌کند و DNS سیستم را دور می‌زند.")
+                    if (c.ip.startsWith("10.10.34.") && host != null) note(1, "نام عمومی $host به آدرس ${c.ip} حل شده؛ این بازه معمولاً صفحهٔ مسدودسازی شبکه است (دست‌کاری DNS بدون رمزنگاری). فعال‌کردن Private DNS (مثلاً dns.google) جلویش را می‌گیرد.")
                     if (service.startsWith("DNS روی")) note(0, "پرس‌وجوهای DNS این برنامه رمزنگاری‌شده است و در لاگ DNS سیستم دیده نمی‌شود.")
                     if (p?.apk == true) { crypto = "بدون رمزنگاری"; service = "HTTP (دانلود APK)"; e = 2 }
 
