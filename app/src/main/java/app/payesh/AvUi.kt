@@ -648,6 +648,7 @@ fun DnsCard(ctx: Context) {
     var on by remember { mutableStateOf(DnsProxy.enabled) }
     var fb by remember { mutableStateOf(DnsProxy.fallbackPlain) }
     var sel by remember { mutableStateOf(DnsProxy.providerId) }
+    var tr by remember { mutableStateOf(DnsProxy.transport) }
     var cip by remember { mutableStateOf(DnsProxy.customIp) }
     var chost by remember { mutableStateOf(DnsProxy.customHost) }
     var msg by remember { mutableStateOf<String?>(null) }
@@ -656,7 +657,7 @@ fun DnsCard(ctx: Context) {
     val vpn by Tracker.running.collectAsState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     LaunchedEffect(Unit) { while (true) { delay(2000); tick++ } }
-    val stat = remember(tick) { "امن: ${DnsProxy.ok.get()} • ناموفق: ${DnsProxy.failed.get()} • بازگشت به DNS ساده: ${DnsProxy.plain.get()}" }
+    val stat = remember(tick) { "امن: ${DnsProxy.ok.get()} • ناموفق: ${DnsProxy.failed.get()} • بازگشت به DNS ساده: ${DnsProxy.plain.get()}" + (if (DnsProxy.lastOk.isNotEmpty()) " • مسیر فعلی: ${DnsProxy.lastOk}" else "") }
     val blocked = remember(tick) { System.currentTimeMillis() < DnsProxy.blockedUntil }
 
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
@@ -678,6 +679,13 @@ fun DnsCard(ctx: Context) {
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for ((id, name) in row) AvBtn(name, sel == id, Accent, Modifier.weight(1f)) { sel = id; DnsProxy.providerId = id; DnsProxy.save(ctx) }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text("روش اتصال امن (اگر شبکه یکی را ببندد، «خودکار» به دیگری می‌رود)", color = Muted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((tv, nm) in listOf(0 to "خودکار", 1 to "DoT (853)", 2 to "DoH (443)")) {
+                AvBtn(nm, tr == tv, Accent, Modifier.weight(1f)) { tr = tv; DnsProxy.transport = tv; DnsProxy.save(ctx) }
             }
         }
         if (sel == "custom") {
@@ -703,14 +711,14 @@ fun DnsCard(ctx: Context) {
                 Text("اگر DNS امن کار نکرد، به DNS ساده برگرد", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Text(
                     if (fb) "اینترنت قطع نمی‌شود، ولی در آن لحظه‌ها DNS رمزنگاری نمی‌شود."
-                    else "اگر شبکه پورت 853 را ببندد، سایت‌ها باز نمی‌شوند.",
+                    else "اگر هیچ مسیر امنی کار نکند، سایت‌ها باز نمی‌شوند.",
                     color = Muted, fontSize = 11.sp
                 )
             }
             Toggle(fb) { fb = it; DnsProxy.fallbackPlain = it; DnsProxy.save(ctx) }
         }
         Text(stat, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-        if (blocked) Text("چند بار پشت‌سرهم ناموفق بود؛ تا یک دقیقه DNS ساده استفاده می‌شود. احتمالاً شبکه پورت 853 را می‌بندد.", color = Orange, fontSize = 11.sp)
+        if (blocked) Text("مسیر(های) امن چند بار پشت‌سرهم ناموفق بود؛ چند دقیقه DNS ساده استفاده می‌شود. «تست DNS امن» را بزن تا دلیلش را ببینی.", color = Orange, fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
         AvBtn(if (busy) "در حال تست..." else "تست DNS امن", false, Accent, Modifier.fillMaxWidth()) {
             if (!busy) {
