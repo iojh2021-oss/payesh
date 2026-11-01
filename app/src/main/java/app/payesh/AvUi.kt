@@ -659,6 +659,7 @@ fun DnsCard(ctx: Context) {
     LaunchedEffect(Unit) { while (true) { delay(2000); tick++ } }
     val stat = remember(tick) { "امن: ${DnsProxy.ok.get()} • ناموفق: ${DnsProxy.failed.get()} • بازگشت به DNS ساده: ${DnsProxy.plain.get()}" + (if (DnsProxy.lastOk.isNotEmpty()) " • مسیر فعلی: ${DnsProxy.lastOk}" else "") }
     val blocked = remember(tick) { System.currentTimeMillis() < DnsProxy.blockedUntil }
+    val lastErr = remember(tick) { DnsProxy.lastError }
 
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -718,6 +719,7 @@ fun DnsCard(ctx: Context) {
             Toggle(fb) { fb = it; DnsProxy.fallbackPlain = it; DnsProxy.save(ctx) }
         }
         Text(stat, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+        if (lastErr.isNotEmpty() && DnsProxy.ok.get() == 0) Text("آخرین خطا: $lastErr", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
         if (blocked) Text("مسیر(های) امن چند بار پشت‌سرهم ناموفق بود؛ چند دقیقه DNS ساده استفاده می‌شود. «تست DNS امن» را بزن تا دلیلش را ببینی.", color = Orange, fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
         AvBtn(if (busy) "در حال تست..." else "تست DNS امن", false, Accent, Modifier.fillMaxWidth()) {

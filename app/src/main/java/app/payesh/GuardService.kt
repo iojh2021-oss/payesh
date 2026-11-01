@@ -139,6 +139,7 @@ class GuardService : Service() {
     }
 
     private fun shutdown() {
+        Plog.w("guard stopped")
         AvGuardState.running.value = false
         sched?.shutdownNow(); sched = null
         work?.shutdownNow(); work = null

@@ -423,6 +423,7 @@ object NetScan {
             val topConn = HashMap<Int, String>()
             val anomalies = HashMap<Int, Pair<Int, Long>>()
             val learnPk = HashSet<String>()
+            var dnsNoteDone = false
             if (lastUp.size > 5000) lastUp.clear()
             for ((uid, us) in Tracker.uids) {
                 val pkg = appOf(ctx, uid).second
@@ -516,8 +517,16 @@ object NetScan {
                             service = if (r != null) "DNS ($r ${c.ip})" else "DNS"
                             crypto = "بدون رمزنگاری (UDP/$port)"
                             if (DnsProxy.enabled && c.proto == "UDP" && port == 53) {
-                                crypto = "داخل گوشی ساده است؛ VPN پایش آن را با ${DnsProxy.lastOk.ifEmpty { "DoT/DoH" }} رمزنگاری‌شده به ${DnsProxy.provider.name} می‌فرستد"
-                                e = 1
+                                if (DnsProxy.lastOkAt > 0 && now - DnsProxy.lastOkAt < 300_000) {
+                                    crypto = "داخل گوشی ساده است؛ VPN پایش آن را با ${DnsProxy.lastOk.ifEmpty { "DoT/DoH" }} رمزنگاری‌شده به ${DnsProxy.provider.name} می‌فرستد"
+                                    e = 1
+                                } else {
+                                    crypto = "بدون رمزنگاری: DNS امن روشن است ولی پنج دقیقهٔ اخیر پاسخ امنی نرسیده؛ پرسش‌ها ساده می‌روند"
+                                    if (!dnsNoteDone) {
+                                        dnsNoteDone = true
+                                        note(1, "DNS امن روشن است ولی کار نمی‌کند (${DnsProxy.lastError.ifEmpty { "دلیل ثبت نشده" }}). در کارت DNS «تست DNS امن» را بزن.")
+                                    }
+                                }
                             }
                         }
                     } else if (p != null && p.enc == 3) {

@@ -45,6 +45,7 @@ object DnsProxy {
     @Volatile var customHost = ""
     @Volatile var lastOk = ""              // "DoT" or "DoH": the channel that answered last
     @Volatile var lastError = ""           // why the last attempt failed (stage + exception)
+    @Volatile var lastOkAt = 0L            // when an encrypted answer last arrived (the inspector only claims "encrypted" if this is recent)
     @Volatile var protector: ((Socket) -> Boolean)? = null   // VpnService.protect: our own sockets must bypass the tunnel
 
     val ok = AtomicInteger()
@@ -56,6 +57,7 @@ object DnsProxy {
     private val dohBlocked = AtomicLong(0)
     private val dotFails = AtomicInteger()
     private val dohFails = AtomicInteger()
+    private val lastLog = AtomicLong(0)
     private val dotPool = ConcurrentLinkedQueue<Chan>()
     private val dohPool = ConcurrentLinkedQueue<Chan>()
     private val gate = Semaphore(6)
@@ -140,10 +142,18 @@ object DnsProxy {
                 if (!c.dead && pool.size < 4) pool.offer(c) else c.close()
                 ok.incrementAndGet()
                 (if (t == T_DOT) dotFails else dohFails).set(0)
-                lastOk = if (t == T_DOT) "DoT" else "DoH"
+                val label = if (t == T_DOT) "DoT" else "DoH"
+                if (lastOk != label) Plog.w("dns: encrypted answers via $label (${p.name})")
+                lastOk = label
+                lastOkAt = System.currentTimeMillis()
                 return r
             }
             c.close() // a pooled connection may simply have gone stale: the next attempt opens a fresh one
+        }
+        val now0 = System.currentTimeMillis()
+        if (now0 - lastLog.get() > 60_000) { // one line per minute, so the log shows WHY without flooding it
+            lastLog.set(now0)
+            Plog.w("dns: ${if (t == T_DOT) "DoT" else "DoH"} failed (${p.name}): ${lastError.ifEmpty { "no detail" }}")
         }
         val n = (if (t == T_DOT) dotFails else dohFails).incrementAndGet()
         if (n >= 2) (if (t == T_DOT) dotBlocked else dohBlocked).set(System.currentTimeMillis() + 180_000)
@@ -224,15 +234,15 @@ object DnsProxy {
                 raw = r
                 DnsProxy.protector?.invoke(r)
                 r.tcpNoDelay = true
-                r.connect(InetSocketAddress(ip, port), 2500)
-                r.soTimeout = 3000
+                r.connect(InetSocketAddress(ip, port), 2000)
+                r.soTimeout = 2500
                 stage = "دست‌دهی TLS"
                 val s = Pq.factory.createSocket(r, host, port, true) as SSLSocket
                 sock = s
                 val prm = s.sslParameters
                 prm.endpointIdentificationAlgorithm = "HTTPS" // verify the server certificate against the host name
                 s.sslParameters = prm
-                s.soTimeout = 3000
+                s.soTimeout = 2500
                 s.startHandshake()
                 inp = DataInputStream(BufferedInputStream(s.inputStream))
                 out = s.outputStream
