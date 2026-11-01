@@ -86,7 +86,7 @@ object Vt {
             val a = p.getString(sha, "0|0|0")!!.split("|")
             return VtRes(a[0].toIntOrNull() ?: 0, a[1].toIntOrNull() ?: 0, true)
         }
-        val con = URL("https://www.virustotal.com/api/v3/files/$sha").openConnection() as HttpURLConnection
+        val con = Pq.open("https://www.virustotal.com/api/v3/files/$sha")
         con.connectTimeout = 10_000
         con.readTimeout = 15_000
         con.setRequestProperty("x-apikey", key)

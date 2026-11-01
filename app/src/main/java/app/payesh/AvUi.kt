@@ -70,6 +70,7 @@ import android.app.NotificationManager
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val Danger = Color(0xFFFF5A5F)
@@ -144,6 +145,8 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         item { AppLockCard(ctx) }
         item { DashboardCard(ctx) }
         item { NetScanCard(ctx) }
+        item { DnsCard(ctx) }
+        item { PqCard(ctx) }
         item {
             val last = counts.lastScan
             val ago = if (last == 0L) "—" else {
@@ -636,6 +639,113 @@ private fun ScanRow(f: ScanFinding) {
             color = when (f.enc) { 1 -> Accent; 2 -> Orange; else -> Color.White }, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)
         )
         for (n in f.notes) Text("• $n", color = col, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
+@Composable
+fun DnsCard(ctx: Context) {
+    DnsProxy.init(ctx)
+    var on by remember { mutableStateOf(DnsProxy.enabled) }
+    var fb by remember { mutableStateOf(DnsProxy.fallbackPlain) }
+    var sel by remember { mutableStateOf(DnsProxy.providerId) }
+    var cip by remember { mutableStateOf(DnsProxy.customIp) }
+    var chost by remember { mutableStateOf(DnsProxy.customHost) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var tick by remember { mutableStateOf(0) }
+    val vpn by Tracker.running.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(Unit) { while (true) { delay(2000); tick++ } }
+    val stat = remember(tick) { "امن: ${DnsProxy.ok.get()} • ناموفق: ${DnsProxy.failed.get()} • بازگشت به DNS ساده: ${DnsProxy.plain.get()}" }
+    val blocked = remember(tick) { System.currentTimeMillis() < DnsProxy.blockedUntil }
+
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("DNS رمزنگاری‌شده (DoT)", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    "وقتی روشن است، پرسش‌های DNS همهٔ برنامه‌ها داخل VPN پایش گرفته و رمزنگاری‌شده به سرویسی که انتخاب می‌کنی می‌رود. شبکه یا اپراتور نمی‌تواند آن‌ها را ببیند یا جواب را دست‌کاری کند. سرویس انتخابی نام سایت‌ها را می‌بیند.",
+                    color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                )
+            }
+            Toggle(on) { on = it; DnsProxy.enabled = it; DnsProxy.save(ctx) }
+        }
+        if (!on) return@Column
+        if (!vpn) Text("فقط وقتی پایش ترافیک (VPN) روشن است کار می‌کند.", color = Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        Spacer(Modifier.height(6.dp))
+        val opts = DnsProxy.builtin.map { it.id to it.name } + ("custom" to "سرور من")
+        for (row in opts.chunked(2)) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((id, name) in row) AvBtn(name, sel == id, Accent, Modifier.weight(1f)) { sel = id; DnsProxy.providerId = id; DnsProxy.save(ctx) }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        if (sel == "custom") {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = cip, onValueChange = { cip = it; DnsProxy.customIp = it.trim(); DnsProxy.save(ctx) }, singleLine = true,
+                label = { Text("آدرس IP سرور (مثلاً 203.0.113.5)", color = Muted) },
+                shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = chost, onValueChange = { chost = it; DnsProxy.customHost = it.trim(); DnsProxy.save(ctx) }, singleLine = true,
+                label = { Text("نام سرور در گواهی (مثلاً dns.example.com)", color = Muted) },
+                shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("اگر DNS امن کار نکرد، به DNS ساده برگرد", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    if (fb) "اینترنت قطع نمی‌شود، ولی در آن لحظه‌ها DNS رمزنگاری نمی‌شود."
+                    else "اگر شبکه پورت 853 را ببندد، سایت‌ها باز نمی‌شوند.",
+                    color = Muted, fontSize = 11.sp
+                )
+            }
+            Toggle(fb) { fb = it; DnsProxy.fallbackPlain = it; DnsProxy.save(ctx) }
+        }
+        Text(stat, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+        if (blocked) Text("چند بار پشت‌سرهم ناموفق بود؛ تا یک دقیقه DNS ساده استفاده می‌شود. احتمالاً شبکه پورت 853 را می‌بندد.", color = Orange, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp))
+        AvBtn(if (busy) "در حال تست..." else "تست DNS امن", false, Accent, Modifier.fillMaxWidth()) {
+            if (!busy) {
+                busy = true; msg = null
+                scope.launch(Dispatchers.IO) {
+                    val r = DnsProxy.test()
+                    withContext(Dispatchers.Main) { msg = r; busy = false }
+                }
+            }
+        }
+        if (msg != null) Text(msg ?: "", color = if (msg?.startsWith("کار می‌کند") == true) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable
+fun PqCard(ctx: Context) {
+    var res by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Text("رمزنگاری پسا‌کوانتومی (TLS)", color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+            "اتصال‌های خود برنامه (به‌روزرسانی دیتابیس، VirusTotal، داشبورد، DNS امن) با کتابخانهٔ TLS همراه برنامه انجام می‌شود که تبادل کلید ترکیبی X25519MLKEM768 را پیشنهاد می‌دهد. اگر سرور هم پشتیبانی کند، کلید جلسه در برابر ضبط‌کردن ترافیک و رمزگشایی کوانتومی در آینده محافظت می‌شود. هویت سرور (گواهی) هنوز کلاسیک است.",
+            color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+        AvBtn(if (busy) "در حال تست..." else "تست پیشنهاد PQ", false, Accent, Modifier.fillMaxWidth()) {
+            if (!busy) {
+                busy = true; res = null
+                scope.launch(Dispatchers.IO) {
+                    val r = try { Pq.selfTest() } catch (e: Throwable) { "ناموفق: " + e.javaClass.simpleName }
+                    withContext(Dispatchers.Main) { res = r; busy = false }
+                }
+            }
+        }
+        if (res != null) Text(res ?: "", color = if (res?.contains("بله ✓") == true) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
     }
 }
 

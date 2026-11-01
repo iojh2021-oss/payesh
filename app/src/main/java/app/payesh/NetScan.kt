@@ -515,6 +515,10 @@ object NetScan {
                             val r = RESOLVERS[c.ip]
                             service = if (r != null) "DNS ($r ${c.ip})" else "DNS"
                             crypto = "بدون رمزنگاری (UDP/$port)"
+                            if (DnsProxy.enabled && c.proto == "UDP" && port == 53) {
+                                crypto = "داخل گوشی ساده است؛ VPN پایش آن را با DoT رمزنگاری‌شده به ${DnsProxy.provider.name} می‌فرستد"
+                                e = 1
+                            }
                         }
                     } else if (p != null && p.enc == 3) {
                         service = byPort ?: "پروتکل ناشناخته"

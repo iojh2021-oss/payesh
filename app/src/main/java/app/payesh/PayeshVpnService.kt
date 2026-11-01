@@ -94,6 +94,8 @@ class PayeshVpnService : VpnService() {
 
     override fun onCreate() {
         NetScan.init(this)
+        DnsProxy.init(this)
+        DnsProxy.protector = { s -> protect(s) }
         super.onCreate()
         Plog.init(this)
         if (!crashHook) {
@@ -127,6 +129,8 @@ class PayeshVpnService : VpnService() {
 
     override fun onDestroy() {
         Plog.w("onDestroy")
+        DnsProxy.protector = null
+        DnsProxy.closePool()
         closeTunnel()
         super.onDestroy()
     }
@@ -416,7 +420,7 @@ class PayeshVpnService : VpnService() {
             val uid = owner(OsConstants.IPPROTO_UDP, sp, rem, dp)
             conn = Tracker.conn(uid, "UDP", remStr, dp)
             ds.connect(InetAddress.getByAddress(rem), dp)
-            ds.soTimeout = if (dp == 53) 5000 else 20000
+            ds.soTimeout = if (dp == 53) (if (DnsProxy.enabled) 12000 else 5000) else 20000
             if (!runAsync(Runnable { receiveLoop() })) {
                 try { ds.close() } catch (_: Exception) {}
                 throw RejectedExecutionException("pool full")
@@ -426,10 +430,35 @@ class PayeshVpnService : VpnService() {
         fun send(d: ByteArray, off: Int, len: Int) {
             lastAct = System.currentTimeMillis()
             try {
+                if (dp == 53 && DnsProxy.enabled) { proxyDns(d.copyOfRange(off, off + len)); return }
                 ds.send(DatagramPacket(d, off, len))
                 conn?.let { it.up.addAndGet(len.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, true, d, off, len, dp) }
                 if (dp == 53) Sniff.dnsQuery(d.copyOfRange(off, off + len))?.let { conn?.url = "DNS: $it" }
             } catch (_: Exception) { close() }
+        }
+
+        /** Encrypted DNS: the query goes to the chosen provider over DoT; the answer is written back into the tunnel. */
+        private fun proxyDns(q: ByteArray) {
+            conn?.let { it.up.addAndGet(q.size.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, true, q, 0, q.size, dp) }
+            Sniff.dnsQuery(q)?.let { conn?.url = "DNS: $it" }
+            val started = runAsync(Runnable {
+                val r = DnsProxy.query(q, false)
+                if (r != null) dnsReply(r)
+                else if (DnsProxy.fallbackPlain) plainDns(q)
+            })
+            if (!started && DnsProxy.fallbackPlain) plainDns(q)
+        }
+
+        private fun plainDns(q: ByteArray) {
+            DnsProxy.plain.incrementAndGet()
+            try { ds.send(DatagramPacket(q, q.size)) } catch (_: Exception) {} // the answer arrives in receiveLoop
+        }
+
+        private fun dnsReply(r0: ByteArray) {
+            val r = if (r0.size <= MTU - 28) r0 else DnsProxy.truncate(r0)
+            Sniff.dns(r.copyOf())
+            conn?.let { it.down.addAndGet(r.size.toLong()); it.touch(); if (NetScan.on) NetScan.feed(it, false, r, 0, r.size, dp) }
+            writeTun(Pkt.udp(rem, cli, dp, sp, r, r.size))
         }
 
         private fun receiveLoop() {

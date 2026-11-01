@@ -164,7 +164,7 @@ object AvDbStore {
         MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
 
     private fun get(u: String, etag: String?, max: Int): Resp {
-        val con = URL(u).openConnection() as HttpURLConnection
+        val con = Pq.open(u)
         con.connectTimeout = 15_000
         con.readTimeout = 30_000
         if (etag != null) con.setRequestProperty("If-None-Match", etag)

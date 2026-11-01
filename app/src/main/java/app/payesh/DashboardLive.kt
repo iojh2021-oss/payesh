@@ -139,7 +139,7 @@ object DashboardLive {
 
     /** No disconnect(): letting HttpURLConnection keep the TLS connection alive avoids a slow handshake on every call. */
     private fun http(method: String, url: String, token: String, body: String?): JSONObject? {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = Pq.open(url)
         c.requestMethod = method
         c.connectTimeout = 20_000; c.readTimeout = 40_000
         c.setRequestProperty("Authorization", "Bearer $token")

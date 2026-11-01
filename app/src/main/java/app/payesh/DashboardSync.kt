@@ -143,7 +143,7 @@ object DashboardSync {
                 attempt++
                 lastResult.value = if (attempt == 1) "در حال ارسال…" else "در حال ارسال… (تلاش $attempt از 3)"
                 try {
-                    val c = URL("$url/api/v1/telemetry").openConnection() as HttpURLConnection
+                    val c = Pq.open("$url/api/v1/telemetry")
                     c.requestMethod = "POST"
                     c.connectTimeout = 20_000; c.readTimeout = 45_000
                     c.doOutput = true
