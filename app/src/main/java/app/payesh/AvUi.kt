@@ -586,6 +586,16 @@ fun NetScanCard(ctx: Context) {
             AvStat("بدون رمز", "${r.plain}", if (r.plain == 0) Accent else Orange, Modifier.weight(1f))
             AvStat("نامشخص", "${r.unknown}", Muted, Modifier.weight(1f))
         }
+        val idPq = r.pqYes + r.pqSrv + r.pqCli
+        if (idPq + r.pqUnk > 0) {
+            Text(
+                "تبادل کلید پسا‌کوانتومی: ${r.pqYes} برقرار ✓ • ${r.pqSrv} سرور نپذیرفت • ${r.pqCli} برنامه پیشنهاد نداد • ${r.pqUnk} قابل‌تشخیص نیست (QUIC و ...)" +
+                    (if (idPq > 0) "\nاز اتصال‌های قابل‌تشخیص، ${r.pqYes * 100 / idPq}٪ ضد ضبط-و-رمزگشایی کوانتومی هستند." else ""),
+                color = if (idPq > 0 && r.pqYes == idPq) Accent else Violet, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp)
+            )
+            if (r.noPqApps.isNotEmpty()) Text("برنامه‌های بدون PQ: " + r.noPqApps.joinToString("، "), color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+            if (r.noPqHosts.isNotEmpty()) Text("سرورهایی که PQ را نپذیرفتند: " + r.noPqHosts.joinToString("، "), color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+        }
         val bad = r.items.count { it.level >= 2 }
         Text(
             (if (bad == 0) "مورد مشکوک یا خطرناکی دیده نشد." else "$bad مورد نیاز به بررسی دارد.") +

@@ -51,13 +51,13 @@ object DashboardPrefs {
     private fun p(ctx: Context) = ctx.applicationContext.getSharedPreferences("payesh_dashboard", Context.MODE_PRIVATE)
     fun enabled(ctx: Context) = p(ctx).getBoolean("on", false)
     fun url(ctx: Context) = p(ctx).getString("url", "") ?: ""
-    fun token(ctx: Context) = p(ctx).getString("token", "") ?: ""
+    fun token(ctx: Context) = Secrets.read(p(ctx), "token")
     fun name(ctx: Context) = p(ctx).getString("name", "") ?: ""
     fun live(ctx: Context) = p(ctx).getBoolean("live", false)
     fun setLive(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("live", on).apply()
     fun set(ctx: Context, on: Boolean, url: String, token: String, name: String) =
         p(ctx).edit().putBoolean("on", on).putString("url", url.trim().trimEnd('/'))
-            .putString("token", token.trim()).putString("name", name.trim()).apply()
+            .also { Secrets.write(it, "token", token.trim()) }.putString("name", name.trim()).apply()
 
     /** Random per-install id (not a hardware identifier). */
     fun deviceId(ctx: Context): String {

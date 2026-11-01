@@ -15,6 +15,7 @@ class Probe {
     @Volatile var alpn: String? = null
     @Volatile var ech = false              // Encrypted Client Hello: the site name is hidden
     @Volatile var pq = false               // post-quantum key share offered
+    @Volatile var negGroup = 0             // key-exchange group the SERVER chose (TLS 1.3 ServerHello key_share)
     @Volatile var weakOffer = false        // client also offered RC4 / DES / 3DES / NULL ciphers
     @Volatile var apk = false              // plain-HTTP response that looks like an APK download
     @Volatile var entropy = -1f
@@ -26,13 +27,16 @@ class ScanFinding(
     val key: String, val uid: Int, val app: String, val pkg: String?, val proto: String,
     val ip: String, val port: Int, val host: String?, val service: String, val crypto: String,
     val enc: Int, val level: Int, val notes: List<String>, val up: Long, val down: Long,
-    val bg: Boolean, val sampled: Boolean
+    val bg: Boolean, val sampled: Boolean,
+    val pq: Int = 0   // 0 not applicable / unknown, 1 post-quantum key exchange negotiated, 2 server stayed classical, 3 app did not offer PQ
 )
 
 class ScanReport(
     val time: Long, val total: Int, val encrypted: Int, val plain: Int, val unknown: Int,
     val bgApps: Int, val bgKnown: Boolean, val sampled: Int, val items: List<ScanFinding>,
-    val learning: Int = 0
+    val learning: Int = 0,
+    val pqYes: Int = 0, val pqSrv: Int = 0, val pqCli: Int = 0, val pqUnk: Int = 0,
+    val noPqApps: List<String> = emptyList(), val noPqHosts: List<String> = emptyList()
 )
 
 /**
@@ -136,6 +140,12 @@ object NetScan {
     }
     /** Random / compressed / encrypted data sits just under the maximum for its sample size; text and JSON are far lower. */
     private fun highEntropy(n: Int, e: Float) = n >= 256 && e >= 8.0 - 255.0 / (2 * n * ln(2.0)) - 0.35
+
+    private fun isPqGroup(g: Int) = g == 0x11ec || g == 0x11eb || g == 0x11ed || g == 0x6399
+    private fun pqName(g: Int) = when (g) {
+        0x11ec -> "X25519MLKEM768"; 0x11eb -> "SecP256r1MLKEM768"; 0x11ed -> "SecP384r1MLKEM1024"; 0x6399 -> "X25519Kyber768 قدیمی"
+        else -> "0x" + Integer.toHexString(g)
+    }
 
     private fun tlsName(v: Int) = when (v) {
         0x0304 -> "TLS 1.3"; 0x0303 -> "TLS 1.2"; 0x0302 -> "TLS 1.1"; 0x0301 -> "TLS 1.0"; 0x0300 -> "SSL 3.0"; else -> "TLS"
@@ -300,6 +310,7 @@ object NetScan {
                 val t = u16(d, q); val l = u16(d, q + 2); q += 4
                 if (t == 0x2b && q + 2 <= d.size) ver = u16(d, q)
                 else if (t == 0x10 && q + 5 <= d.size) p.alpn = String(d, q + 3, minOf(u8(d, q + 2), d.size - q - 3), Charsets.US_ASCII)
+                else if (t == 0x33 && q + 2 <= d.size) p.negGroup = u16(d, q)
                 q += l
             }
         }
@@ -424,6 +435,9 @@ object NetScan {
             val anomalies = HashMap<Int, Pair<Int, Long>>()
             val learnPk = HashSet<String>()
             var dnsNoteDone = false
+            var pqYes = 0; var pqSrv = 0; var pqCli = 0; var pqUnk = 0
+            val noPqApps = LinkedHashMap<String, Int>()
+            val noPqHosts = LinkedHashMap<String, Int>()
             if (lastUp.size > 5000) lastUp.clear()
             for ((uid, us) in Tracker.uids) {
                 val pkg = appOf(ctx, uid).second
@@ -490,13 +504,28 @@ object NetScan {
                     // ---- what is it, and how is it protected
                     var service: String; var crypto: String; var e: Int
                     val tls = p?.svc == "TLS"
+                    // how was the key exchange of this connection really done? (from the ServerHello, not just the app's offer)
+                    var pqs = 0
+                    if (tls && p != null) {
+                        pqs = when {
+                            isPqGroup(p.negGroup) -> 1
+                            p.tlsChosen != 0 && p.pq -> 2
+                            p.tlsChosen != 0 -> 3
+                            p.tlsOffered != 0 && !p.pq -> 3
+                            else -> 0
+                        }
+                    }
                     if (tls) {
                         val parts = ArrayList<String>()
                         parts.add(if (p!!.tlsChosen != 0) tlsName(p.tlsChosen) else tlsName(p.tlsOffered) + " (حداکثر پیشنهادی)")
                         p.alpn?.let { a -> parts.add(if (a.contains("h3")) "ALPN: $a" else "ALPN: $a") }
                         if (p.cipher != 0) parts.add(cipherName(p.cipher))
                         if (p.ech) parts.add("ECH (نام سایت مخفی)")
-                        if (p.pq) parts.add("کلید پساکوانتومی")
+                        when (pqs) {
+                            1 -> parts.add("PQ برقرار شد ✓ (" + pqName(p.negGroup) + ")")
+                            2 -> parts.add("PQ پیشنهاد شد ولی سرور نپذیرفت (کلاسیک)")
+                            3 -> parts.add("بدون PQ: برنامه پیشنهاد نداد (کلاسیک)")
+                        }
                         crypto = parts.joinToString(" • ")
                         service = when {
                             port == 853 -> "DNS روی TLS (DoT)"
@@ -594,12 +623,20 @@ object NetScan {
                         }
                     }
 
-                    items.add(ScanFinding("$uid|${c.proto}|${c.ip}|$port", uid, label, pkg, c.proto, c.ip, port, host, service, crypto, e, level, notes, up, down, bg, p != null && (p.sUp > 0 || p.sDown > 0)))
+                    if (tls) {
+                        when (pqs) {
+                            1 -> pqYes++
+                            2 -> { pqSrv++; (host ?: c.ip).let { h -> noPqHosts[h] = (noPqHosts[h] ?: 0) + 1 } }
+                            3 -> { pqCli++; noPqApps[label] = (noPqApps[label] ?: 0) + 1 }
+                            else -> pqUnk++
+                        }
+                    } else if (p?.svc?.startsWith("QUIC") == true) pqUnk++ // QUIC hides its handshake: cannot be audited from outside
+                    items.add(ScanFinding("$uid|${c.proto}|${c.ip}|$port", uid, label, pkg, c.proto, c.ip, port, host, service, crypto, e, level, notes, up, down, bg, p != null && (p.sUp > 0 || p.sDown > 0), pqs))
                 }
             }
             items.sortWith(compareByDescending<ScanFinding> { it.level }.thenByDescending { it.bg }.thenByDescending { it.up + it.down })
             val shown = if (items.size > 200) items.subList(0, 200).toList() else items
-            report.value = ScanReport(now, items.size, enc, plain, unk, bgSet.size, fgSet != null, sampled, shown, learnPk.size)
+            report.value = ScanReport(now, items.size, enc, plain, unk, bgSet.size, fgSet != null, sampled, shown, learnPk.size, pqYes, pqSrv, pqCli, pqUnk, noPqApps.keys.take(8), noPqHosts.keys.take(8))
 
             if (notify) {
                 var sent = 0
@@ -623,6 +660,10 @@ object NetScan {
         val sb = StringBuilder()
         sb.append("گزارش بازرس شبکهٔ پایش\n")
         sb.append("کل مقصدها: ${r.total} | رمزنگاری‌شده: ${r.encrypted} | بدون رمزنگاری: ${r.plain} | نامشخص/رمز ناشناخته: ${r.unknown} | نمونه‌برداری‌شده: ${r.sampled}\n\n")
+        sb.append("تبادل کلید پسا‌کوانتومی (TLS): برقرار ${r.pqYes} | سرور نپذیرفت ${r.pqSrv} | برنامه پیشنهاد نداد ${r.pqCli} | قابل‌تشخیص نیست (QUIC و ...) ${r.pqUnk}\n")
+        if (r.noPqApps.isNotEmpty()) sb.append("برنامه‌های بدون PQ: " + r.noPqApps.joinToString("، ") + "\n")
+        if (r.noPqHosts.isNotEmpty()) sb.append("سرورهایی که PQ را نپذیرفتند: " + r.noPqHosts.joinToString("، ") + "\n")
+        sb.append("\n")
         for (f in r.items) {
             sb.append("[${listOf("عادی", "توجه", "مشکوک", "خطرناک")[f.level.coerceIn(0, 3)]}] ${f.app}${if (f.bg) " (پس‌زمینه)" else ""}\n")
             sb.append("  ${f.proto} ${f.ip}:${f.port}${f.host?.let { " ($it)" } ?: ""}\n")

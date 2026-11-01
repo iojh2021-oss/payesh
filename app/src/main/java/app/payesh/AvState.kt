@@ -45,8 +45,8 @@ object AvPrefs {
     fun setAskBeforeScan(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ask_scan", v).apply()
 
     fun vtEnabled(ctx: Context) = p(ctx).getBoolean("vt_on", false)
-    fun vtKey(ctx: Context) = p(ctx).getString("vt_key", "") ?: ""
-    fun setVt(ctx: Context, on: Boolean, key: String) = p(ctx).edit().putBoolean("vt_on", on).putString("vt_key", key).apply()
+    fun vtKey(ctx: Context) = Secrets.read(p(ctx), "vt_key")
+    fun setVt(ctx: Context, on: Boolean, key: String) = p(ctx).edit().putBoolean("vt_on", on).also { Secrets.write(it, "vt_key", key) }.apply()
 
     fun lastScan(ctx: Context) = p(ctx).getLong("last_scan", 0L)
     fun setLastScan(ctx: Context, t: Long) = p(ctx).edit().putLong("last_scan", t).apply()
