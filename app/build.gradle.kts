@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// every CI build gets a higher version number, so Android always treats it as an upgrade
+val runNo = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+
 android {
     namespace = "app.payesh"
     compileSdk = 34
@@ -11,9 +14,22 @@ android {
         applicationId = "app.payesh"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = runNo
+        versionName = "1.0.$runNo"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+    // A FIXED signing key (from GitHub secrets). Without it every CI run invents a new random debug key and
+    // Android refuses to install the new APK over the old one.
+    signingConfigs {
+        val ksPath = System.getenv("PAYESH_KEYSTORE")
+        if (ksPath != null && file(ksPath).exists()) {
+            getByName("debug") {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("PAYESH_KEYSTORE_PASSWORD")
+                keyAlias = "payesh"
+                keyPassword = System.getenv("PAYESH_KEYSTORE_PASSWORD")
+            }
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

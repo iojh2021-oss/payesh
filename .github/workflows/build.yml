@@ -43,6 +43,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
+      - name: Stable signing key (so updates install over the old app)
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PW: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/payesh.keystore"
+            echo "PAYESH_KEYSTORE=$RUNNER_TEMP/payesh.keystore" >> "$GITHUB_ENV"
+            echo "PAYESH_KEYSTORE_PASSWORD=$KS_PW" >> "$GITHUB_ENV"
+            echo "Using the fixed signing key."
+          else
+            echo "::warning::No KEYSTORE_BASE64 secret: this APK gets a random debug key and cannot be installed over an older one. Run tools/make-keystore.sh once."
+          fi
       - run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
