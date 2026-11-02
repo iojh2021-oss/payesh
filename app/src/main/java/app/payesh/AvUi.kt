@@ -748,6 +748,8 @@ fun DnsCard(ctx: Context) {
 @Composable
 fun PqCard(ctx: Context) {
     var res by remember { mutableStateOf<String?>(null) }
+    var res2 by remember { mutableStateOf<String?>(null) }
+    var busy2 by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
@@ -766,6 +768,17 @@ fun PqCard(ctx: Context) {
             }
         }
         if (res != null) Text(res ?: "", color = if (res?.contains("بله ✓") == true) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        Spacer(Modifier.height(10.dp))
+        AvBtn(if (busy2) "در حال تست..." else "تست امضای ML-DSA دیتابیس", false, Accent, Modifier.fillMaxWidth()) {
+            if (!busy2) {
+                busy2 = true; res2 = null
+                scope.launch(Dispatchers.IO) {
+                    val r = try { AvDbStore.pqCheck(ctx) } catch (e: Throwable) { "ناموفق: " + e.javaClass.simpleName }
+                    withContext(Dispatchers.Main) { res2 = r; busy2 = false }
+                }
+            }
+        }
+        if (res2 != null) Text(res2 ?: "", color = if (res2?.contains("✓ معتبر") == true) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
     }
 }
 

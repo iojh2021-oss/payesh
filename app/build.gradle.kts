@@ -49,5 +49,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80") // ML-DSA-65 verification of the database signature
     implementation("org.conscrypt:conscrypt-android:2.7.0") // bundled BoringSSL TLS with hybrid post-quantum key exchange
 }

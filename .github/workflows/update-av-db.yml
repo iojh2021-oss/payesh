@@ -48,6 +48,23 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/av.pem"
 
+      - name: Sign manifest with ML-DSA-65 (post-quantum, hybrid with ECDSA)
+        env:
+          AV_MLDSA_KEY: ${{ secrets.AV_MLDSA_KEY }}
+        run: |
+          if [ -z "$AV_MLDSA_KEY" ]; then echo "AV_MLDSA_KEY not set: classical signature only"; exit 0; fi
+          cd db
+          if [ -z "$(git status --porcelain -- manifest.json)" ] && [ -f manifest.sig.mldsa ]; then echo "manifest unchanged"; exit 0; fi
+          cd ..
+          printf '%s\n' "$AV_MLDSA_KEY" > mldsa.pem
+          if openssl list -signature-algorithms 2>/dev/null | grep -qi 'ML-DSA-65'; then
+            sh src/av-db/tools/mldsa-sign.sh mldsa.pem db/manifest.json db/manifest.sig.mldsa src/av-db/pq/av-pub-mldsa65.pem
+          else
+            echo "runner OpenSSL has no ML-DSA: signing inside a container with a recent OpenSSL"
+            docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w alpine:3.22 sh -c 'apk add --no-cache openssl >/dev/null && sh src/av-db/tools/mldsa-sign.sh mldsa.pem db/manifest.json db/manifest.sig.mldsa src/av-db/pq/av-pub-mldsa65.pem'
+          fi
+          rm -f mldsa.pem
+
       - name: Publish to av-db branch
         run: |
           cd db

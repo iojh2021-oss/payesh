@@ -190,6 +190,33 @@ object AvDbStore {
     }
 
     /**
+     * Phone-side test of the post-quantum signature: downloads the published manifest, its ML-DSA signature and the public key
+     * (the one in the APK, or the one waiting in the repo) and verifies. Changes nothing.
+     */
+    fun pqCheck(ctx: Context): String {
+        val app = ctx.applicationContext
+        val sb = StringBuilder()
+        sb.append("کتابخانهٔ ML-DSA: ").append(if (MlDsa.available()) "بارگذاری شد ✓" else "پیدا نشد ✗").append('\n')
+        val bundled = try { app.assets.open(MlDsa.ASSET).bufferedReader().use { it.readText() } } catch (_: Exception) { null }
+        sb.append("اجبار در این نسخه: ").append(if (bundled != null) "فعال (دیتابیس بدون امضای ML-DSA رد می‌شود)" else "خاموش (فقط ECDSA)").append('\n')
+        return try {
+            val base = url(app)
+            val mr = get(base + "manifest.json", null, 1_000_000)
+            val sr = get(base + "manifest.sig.mldsa", null, 8192)
+            if (mr.body == null) return sb.append("مانیفست دریافت نشد (کد ${mr.code})").toString()
+            if (sr.code != 200 || sr.body == null) return sb.append("امضای ML-DSA هنوز منتشر نشده: workflow «Update AV database» را اجرا کن (کد ${sr.code})").toString()
+            val pem = bundled ?: String(get("https://raw.githubusercontent.com/iojh2021-oss/payesh/main/av-db/pq/av-pub-mldsa65.pem", null, 8192).body ?: return sb.append("کلید عمومی در مخزن پیدا نشد (av-db/pq/av-pub-mldsa65.pem)").toString(), Charsets.UTF_8)
+            val raw = MlDsa.rawKey(pem) ?: return sb.append("کلید عمومی خوانده نشد ✗").toString()
+            val sig = Base64.decode(String(sr.body, Charsets.UTF_8).trim(), Base64.DEFAULT)
+            val ok = MlDsa.verify(raw, mr.body, sig)
+            sb.append(if (ok) "امضای ML-DSA-65 مانیفست: ✓ معتبر (${sig.size} بایت)" else "امضای ML-DSA-65 مانیفست: ✗ نامعتبر (${MlDsa.lastError.ifEmpty { "نامشخص" }})")
+            sb.toString()
+        } catch (e: Exception) {
+            sb.append("خطا: ").append(e.javaClass.simpleName).toString()
+        }
+    }
+
+    /**
      * Pipeline: manifest.json -> (signature check) -> version check -> av-db.json -> SHA-256 check against
      * manifest and checksums.txt -> record-count check -> atomic install. Any failure keeps the old database.
      * Blocking; call from a background thread.
@@ -215,6 +242,16 @@ object AvDbStore {
                 val sr = get(base + "manifest.sig", null, 4096)
                 val sig = sr.body?.let { String(it, Charsets.UTF_8) }
                 if (sr.code != 200 || sig == null || !verify(pub, mb, sig)) return "امضای دیجیتال پایگاه نامعتبر است؛ بروزرسانی رد شد"
+                signed = true
+            }
+            // 1b) post-quantum signature (ML-DSA-65). Enforced only when the public key is bundled in the APK (assets/av-pub-mldsa65.pem).
+            val pqPem = try { app.assets.open(MlDsa.ASSET).bufferedReader().use { it.readText() } } catch (_: Exception) { null }
+            if (pqPem != null) {
+                val raw = MlDsa.rawKey(pqPem) ?: return "کلید عمومی ML-DSA داخل برنامه خراب است؛ بروزرسانی رد شد"
+                val pr = get(base + "manifest.sig.mldsa", null, 8192)
+                val ps = pr.body?.let { try { Base64.decode(String(it, Charsets.UTF_8).trim(), Base64.DEFAULT) } catch (_: Exception) { null } }
+                if (pr.code != 200 || ps == null) return "امضای پسا‌کوانتومی (ML-DSA) پایگاه پیدا نشد؛ بروزرسانی رد شد"
+                if (!MlDsa.verify(raw, mb, ps)) return "امضای پسا‌کوانتومی (ML-DSA) نامعتبر است؛ بروزرسانی رد شد (${MlDsa.lastError.ifEmpty { "نامشخص" }})"
                 signed = true
             }
 
