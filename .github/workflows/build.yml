@@ -5,6 +5,8 @@ on:
     paths-ignore:
       - "av-db/**"
   workflow_dispatch:
+permissions:
+  contents: write   # needed to publish the update release
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -57,6 +59,36 @@ jobs:
             echo "::warning::No KEYSTORE_BASE64 secret: this APK gets a random debug key and cannot be installed over an older one. Run tools/make-keystore.sh once."
           fi
       - run: gradle assembleDebug --no-daemon
+      - name: Publish update release (APK, update.json, post-quantum signature)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AV_MLDSA_KEY: ${{ secrets.AV_MLDSA_KEY }}
+        run: |
+          cp app/build/outputs/apk/debug/*.apk payesh.apk
+          python3 - <<'PY'
+          import json, os, hashlib, subprocess
+          sha = hashlib.sha256(open('payesh.apk', 'rb').read()).hexdigest()
+          vc = int(os.environ['GITHUB_RUN_NUMBER'])
+          notes = subprocess.check_output(['git', 'log', '-1', '--pretty=%s']).decode().strip()[:200]
+          repo = os.environ['GITHUB_REPOSITORY']
+          json.dump({"kind": "app-update", "package": "app.payesh", "versionCode": vc, "versionName": "1.0.%d" % vc,
+                     "sha256": sha, "size": os.path.getsize('payesh.apk'),
+                     "url": "https://github.com/%s/releases/download/latest/payesh.apk" % repo, "notes": notes},
+                    open('update.json', 'w'), ensure_ascii=False, separators=(',', ':'))
+          PY
+          if [ -n "$AV_MLDSA_KEY" ]; then
+            printf '%s\n' "$AV_MLDSA_KEY" > mldsa.pem
+            if openssl list -signature-algorithms 2>/dev/null | grep -qi 'ML-DSA-65'; then
+              sh av-db/tools/mldsa-sign.sh mldsa.pem update.json update.json.mldsa av-db/pq/av-pub-mldsa65.pem || echo "::warning::ML-DSA signing of update.json failed"
+            else
+              docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -c 'apk add --no-cache openssl >/dev/null && sh av-db/tools/mldsa-sign.sh mldsa.pem update.json update.json.mldsa av-db/pq/av-pub-mldsa65.pem' || echo "::warning::ML-DSA signing of update.json failed"
+            fi
+            rm -f mldsa.pem
+          fi
+          FILES="payesh.apk update.json"
+          [ -f update.json.mldsa ] && FILES="$FILES update.json.mldsa"
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create latest $FILES --target "$GITHUB_SHA" --title "Payesh 1.0.$GITHUB_RUN_NUMBER" --notes "Automatic build $GITHUB_RUN_NUMBER (in-app updater feed)"
       - uses: actions/upload-artifact@v4
         with:
           name: payesh-debug-apk

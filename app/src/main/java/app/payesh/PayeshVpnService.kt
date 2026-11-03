@@ -111,8 +111,10 @@ class PayeshVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Plog.w("onStartCommand action=${intent?.action} running=$running")
         if (intent?.action == ACTION_STOP) {
+            getSharedPreferences("vpn_state", MODE_PRIVATE).edit().putBoolean("wanted", false).apply()
             stopVpn("user"); return START_NOT_STICKY
         }
+        getSharedPreferences("vpn_state", MODE_PRIVATE).edit().putBoolean("wanted", true).apply()
         wantRunning = true
         startVpn()
         return START_STICKY

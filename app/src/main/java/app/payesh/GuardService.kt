@@ -128,6 +128,7 @@ class GuardService : Service() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED) else registerReceiver(r, f)
         recv = r
         NetScan.init(this)
+        AppUpdater.init(this)
         startWatcher()
         startMediaObserver()
         sched = Executors.newSingleThreadScheduledExecutor().also {
@@ -175,6 +176,7 @@ class GuardService : Service() {
         }
         if (tick == 10 || tick % 7200 == 0) AvDbStore.updateIfDue(this)
         if (tick == 40 || tick % 1200 == 100) periodicScan()
+        if (AppUpdater.autoCheck && (tick == 90 || tick % 7200 == 3600)) Thread({ AppUpdater.autoRun(this) }, "app-update").also { it.isDaemon = true; it.start() }
         if (NetScan.on && tick % 10 == 5) try { NetScan.scan(this, true) } catch (e: Exception) { Plog.w("netscan failed: $e") }
         if (tick % 100 == 50) DashboardSync.syncIfDue(this)
         DashboardLive.ensure(this)
@@ -570,6 +572,13 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED && AvPrefs.enabled(ctx)) {
             try { ctx.startForegroundService(Intent(ctx, GuardService::class.java)) } catch (_: Exception) {}
+        }
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) { // the app was just updated: bring back what was running
+            if (AvPrefs.enabled(ctx)) try { ctx.startForegroundService(Intent(ctx, GuardService::class.java)) } catch (_: Exception) {}
+            val wanted = ctx.getSharedPreferences("vpn_state", Context.MODE_PRIVATE).getBoolean("wanted", false)
+            if (wanted && try { android.net.VpnService.prepare(ctx) == null } catch (_: Exception) { false }) {
+                try { ctx.startForegroundService(Intent(ctx, PayeshVpnService::class.java)) } catch (e: Exception) { Plog.w("vpn restart after update failed: $e") }
+            }
         }
     }
 }

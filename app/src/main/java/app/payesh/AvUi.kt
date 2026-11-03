@@ -146,6 +146,7 @@ fun AntivirusScreen(page: Int, onPage: (Int) -> Unit) {
         item { DashboardCard(ctx) }
         item { NetScanCard(ctx) }
         item { DnsCard(ctx) }
+        item { UpdateCard(ctx) }
         item { PqCard(ctx) }
         item {
             val last = counts.lastScan
@@ -742,6 +743,77 @@ fun DnsCard(ctx: Context) {
             }
         }
         if (msg != null) Text(msg ?: "", color = if (msg?.startsWith("کار می‌کند") == true) Accent else Orange, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable
+fun UpdateCard(ctx: Context) {
+    AppUpdater.init(ctx)
+    var auto by remember { mutableStateOf(AppUpdater.autoCheck) }
+    var autoInst by remember { mutableStateOf(AppUpdater.autoInstall) }
+    var busy by remember { mutableStateOf(false) }
+    var canInst by remember { mutableStateOf(AppUpdater.canInstall(ctx)) }
+    val st by AppUpdater.status.collectAsState()
+    val latest by AppUpdater.latest.collectAsState()
+    val prog by AppUpdater.progress.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(Unit) { while (true) { delay(2000); canInst = AppUpdater.canInstall(ctx) } }
+    val mine = AppUpdater.installedCode(ctx)
+    val newer = latest?.takeIf { it.versionCode > mine }
+
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(CardBg).padding(16.dp)) {
+        Text("به‌روزرسانی برنامه از ریپو", color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+            "نسخهٔ نصب‌شده: ${AppUpdater.installedName(ctx)} (کد $mine). نسخهٔ جدید از GitHub Releases همین ریپو دانلود می‌شود؛ قبل از نصب هش SHA-256، امضای ML-DSA (در صورت فعال‌بودن) و امضای APK بررسی می‌شود.",
+            color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+        if (st.isNotEmpty()) Text(st, color = if (newer != null) Accent else Violet, fontSize = 12.sp)
+        if (newer != null && newer.notes.isNotEmpty()) Text("تغییرات: " + newer.notes, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+        if (prog in 0..99) Text("دانلود: $prog٪", color = Accent, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+        if (!canInst) {
+            Text("برای نصب از داخل برنامه باید «نصب برنامه‌های ناشناس» را برای پایش مجاز کنی (فقط یک بار).", color = Orange, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+            Spacer(Modifier.height(4.dp))
+            AvBtn("باز کردن تنظیم اجازهٔ نصب", false, Orange, Modifier.fillMaxWidth()) { try { ctx.startActivity(AppUpdater.settingsIntent(ctx)) } catch (_: Exception) {} }
+        }
+        Spacer(Modifier.height(8.dp))
+        AvBtn(if (busy) "لطفاً صبر کن..." else "بررسی نسخهٔ جدید", false, Accent, Modifier.fillMaxWidth()) {
+            if (!busy) {
+                busy = true
+                scope.launch(Dispatchers.IO) {
+                    try { AppUpdater.check(ctx) } catch (e: Exception) { AppUpdater.status.value = "خطا: " + e.javaClass.simpleName }
+                    withContext(Dispatchers.Main) { busy = false }
+                }
+            }
+        }
+        if (newer != null) {
+            Spacer(Modifier.height(6.dp))
+            AvBtn("دانلود و نصب نسخهٔ ${newer.versionName}", true, Accent, Modifier.fillMaxWidth()) {
+                if (!busy && canInst) {
+                    busy = true
+                    scope.launch(Dispatchers.IO) {
+                        val f = try { AppUpdater.download(ctx, newer) } catch (e: Exception) { null }
+                        if (f != null) AppUpdater.install(ctx, f, true)
+                        withContext(Dispatchers.Main) { busy = false }
+                    }
+                } else if (!canInst) try { ctx.startActivity(AppUpdater.settingsIntent(ctx)) } catch (_: Exception) {}
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("بررسی خودکار (هر ۶ ساعت)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("فقط با وای‌فای/اینترنت نامحدود دانلود می‌کند و برای نصب اعلان می‌دهد.", color = Muted, fontSize = 11.sp)
+            }
+            Toggle(auto) { auto = it; AppUpdater.autoCheck = it; AppUpdater.save(ctx) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("نصب خودکار", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("وقتی برنامه باز نیست، نسخهٔ جدید را خودش نصب می‌کند (اگر اندروید بدون تأیید اجازه بدهد). هر بیلد تازه‌ای که منتشر شود نصب می‌شود.", color = Muted, fontSize = 11.sp)
+            }
+            Toggle(autoInst) { autoInst = it; AppUpdater.autoInstall = it; AppUpdater.save(ctx) }
+        }
     }
 }
 
