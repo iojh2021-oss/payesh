@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 29,
-  "generated": "2026-11-02T20:28:31Z",
+  "version": 30,
+  "generated": "2026-11-03T00:58:00Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "ef65c967e9559f51a3eab8af078387418d1ced15e4098011ce0b652c614397f8",
-      "size": 430482
+      "sha256": "715e2ccd00850ae7d58fedd29287fd7ed8d0869550d9ceadac3822bc24caec76",
+      "size": 430766
     }
   ],
   "counts": {
-    "hashes": 3300,
+    "hashes": 3301,
     "packages": 615,
     "certs": 473,
-    "domains": 1372,
+    "domains": 1378,
     "entry_names": 7,
     "patterns": 0,
     "rules": 9
@@ -23,8 +23,8 @@
     {
       "name": "MalwareBazaar",
       "status": "ok",
-      "count": 3,
-      "new": 0
+      "count": 4,
+      "new": 1
     },
     {
       "name": "stalkerware-indicators",
@@ -34,8 +34,8 @@
     {
       "name": "ThreatFox",
       "status": "ok",
-      "count": 241,
-      "history": 526
+      "count": 246,
+      "history": 531
     },
     {
       "name": "custom.json",
