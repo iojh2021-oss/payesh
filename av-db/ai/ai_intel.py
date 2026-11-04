@@ -150,16 +150,30 @@ def fetch_items(feeds):
 
 
 # ----------------------------------------------------------------------------- AI
+class _KeepPost(urllib.request.HTTPRedirectHandler):
+    """Follow redirects like `curl -L` but KEEP the POST method and body (urllib would turn it into a GET)."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return urllib.request.Request(newurl, data=req.data, headers=dict(req.header_items()), method=req.get_method())
+
+
+_OPENER = urllib.request.build_opener(_KeepPost())
+
+
 def _post(req):
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return json.load(r)
+        with _OPENER.open(req, timeout=120) as r:
+            raw = r.read().decode("utf-8", "replace")
+            info = "HTTP %s %s ct=%s" % (r.status, r.geturl().split("?")[0], r.headers.get("content-type"))
     except urllib.error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", "replace")[:300]
         except Exception:
             body = ""
         raise RuntimeError("HTTP %s from %s: %s" % (e.code, req.full_url.split("/")[2], body))
+    try:
+        return json.loads(raw)
+    except Exception:
+        raise RuntimeError("not JSON (%s) body=%r" % (info, raw[:300]))
 
 
 def call_llm(system, user):
