@@ -1,0 +1,46 @@
+name: AI threat intel
+# Every 3 hours: read security feeds -> AI extracts indicators -> deterministic validator -> av-db/ai-approved.json
+# -> triggers "Update AV database", which builds, signs and publishes the av-db branch the app downloads.
+on:
+  schedule:
+    - cron: "37 */3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  models: read      # free GitHub Models for the AI step (no API key needed)
+  actions: write    # to start "Update AV database" after new records
+concurrency:
+  group: ai-intel
+  cancel-in-progress: false
+jobs:
+  intel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validator self-test (offline)
+        run: python3 av-db/ai/test_validate.py
+      - name: Collect + AI analysis + validation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional; used instead of GitHub Models when set
+          AI_MODEL: ${{ vars.AI_MODEL }}                         # optional override
+        run: python3 av-db/ai/ai_intel.py
+      - name: Commit new records
+        id: commit
+        run: |
+          git config user.name "payesh-ai-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add av-db/ai-approved.json av-db/ai-meta.json av-db/ai/rules-proposed.json
+          if git diff --cached --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git commit -m "AI intel update [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Rebuild + sign + publish the database now
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run update-av-db.yml

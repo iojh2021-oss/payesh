@@ -206,6 +206,13 @@ def main():
     db_path = os.path.join(out_dir, "av-db.json")
     man_path = os.path.join(out_dir, "manifest.json")
     custom = load_json(custom_path, {})
+    # AI-validated indicators (written by av-db/ai/ai_intel.py); entries in custom.json always win
+    ai = load_json(os.path.join(os.path.dirname(os.path.abspath(custom_path)), "ai-approved.json"), {})
+    ai_count = 0
+    for _k in ("hashes", "packages", "certs", "domains"):
+        _m = ai.get(_k, {}) if isinstance(ai.get(_k, {}), dict) else {}
+        ai_count += len(_m)
+        custom[_k] = dict(_m, **custom.get(_k, {}))
     old = load_json(db_path, {})
     old_man = load_json(man_path, {})
 
@@ -240,6 +247,7 @@ def main():
     packages.update(custom.get("packages", {}))
     certs.update(custom.get("certs", {}))
     domains.update(custom.get("domains", {}))
+    sources.append({"name": "ai-intel", "status": "ok" if ai_count else "empty", "count": ai_count})
     sources.append({"name": "custom.json", "status": "ok",
                     "count": sum(len(custom.get(k, {})) for k in ("hashes", "packages", "certs", "domains"))})
 
