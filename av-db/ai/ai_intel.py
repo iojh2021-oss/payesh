@@ -12,7 +12,7 @@ The AI never writes to the database. Every IOC it proposes must pass checks that
   * hard cap per run, domains expire after DOMAIN_TTL_DAYS
 Report text is treated as untrusted data (prompt-injection safe: AI output is only ever data that gets re-checked).
 """
-import html, json, os, re, sys, time, urllib.request, xml.etree.ElementTree as ET
+import html, json, os, re, sys, time, urllib.error, urllib.request, xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -150,6 +150,18 @@ def fetch_items(feeds):
 
 
 # ----------------------------------------------------------------------------- AI
+def _post(req):
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            body = ""
+        raise RuntimeError("HTTP %s from %s: %s" % (e.code, req.full_url.split("/")[2], body))
+
+
 def call_llm(system, user):
     """Anthropic if ANTHROPIC_API_KEY is set, otherwise GitHub Models (free, uses GITHUB_TOKEN with models: read)."""
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -159,8 +171,7 @@ def call_llm(system, user):
                 "messages": [{"role": "user", "content": user}]}
         req = urllib.request.Request("https://api.anthropic.com/v1/messages", json.dumps(body).encode(),
                                      {"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return json.load(r)["content"][0]["text"]
+        return _post(req)["content"][0]["text"]
     tok = os.environ.get("GITHUB_TOKEN", "").strip()
     if not tok:
         raise RuntimeError("no LLM credentials (ANTHROPIC_API_KEY or GITHUB_TOKEN)")
@@ -169,8 +180,7 @@ def call_llm(system, user):
     req = urllib.request.Request("https://models.github.ai/inference/chat/completions", json.dumps(body).encode(),
                                  {"content-type": "application/json", "authorization": "Bearer " + tok,
                                   "accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.load(r)["choices"][0]["message"]["content"]
+    return _post(req)["choices"][0]["message"]["content"]
 
 
 def parse_json(txt):
@@ -258,7 +268,8 @@ def validate_rule(r, ctx):
 
 
 def process_items(items, meta, approved, proposed, ctx, llm, log=print):
-    stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0}
+    stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0, "first_error": ""}
+    streak = 0
     ts = iso(now())
     cutoff = iso(now() - timedelta(days=PENDING_DAYS))
     meta.setdefault("processed", {}); meta.setdefault("pending", {}); meta.setdefault("approved_meta", {})
@@ -271,7 +282,14 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
         try:
             out = parse_json(llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"])))
         except Exception as ex:
-            stats["ai_errors"] += 1; log("  AI error (%s): %s" % (it["src"], str(ex)[:80])); continue
+            stats["ai_errors"] += 1; streak += 1
+            stats["first_error"] = stats["first_error"] or str(ex)[:300]
+            log("  AI error (%s): %s" % (it["src"], str(ex)[:300]))
+            if streak >= 3:
+                log("  3 AI failures in a row: stopping early (nothing is saved for these items)")
+                break
+            continue
+        streak = 0
         meta["processed"][it["id"]] = ts
         if not out or not out.get("android_related"):
             continue
@@ -329,8 +347,11 @@ def main():
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
             f.write("### AI threat intel\n\n`%s`\n\nfeeds: `%s`\n" % (line, status))
-    if items and stats["ai_errors"] == stats["items"] and stats["items"] > 0:
-        print("WARNING: every AI call failed (check models: read permission / API key)")
+    if stats["first_error"]:
+        print("AI ERROR:", stats["first_error"])
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write("\n**AI error:** `%s`\n" % stats["first_error"].replace("`", "'"))
 
 
 if __name__ == "__main__":
