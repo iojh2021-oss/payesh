@@ -176,6 +176,27 @@ def _post(req):
         raise RuntimeError("not JSON (%s) body=%r" % (info, raw[:300]))
 
 
+_MODEL_CACHE = {}
+
+
+def _discover_model(base, key):
+    """Gemini model names change often: when AI_MODEL is not set, pick the newest non-preview 'flash' model."""
+    if "generativelanguage.googleapis.com" not in base:
+        raise RuntimeError("AI_MODEL variable is required when using AI_API_KEY / AI_BASE_URL")
+    if base in _MODEL_CACHE:
+        return _MODEL_CACHE[base]
+    data = _post(urllib.request.Request(base + "/models", headers={"authorization": "Bearer " + key}))
+    bad = ("image", "tts", "live", "audio", "embed", "thinking", "exp", "vision", "robotics", "computer", "lite")
+    names = [str(m.get("id", "")).split("/")[-1] for m in data.get("data", [])]
+    cands = [n for n in names if "flash" in n and not any(b in n for b in bad)]
+    if not cands:
+        raise RuntimeError("no suitable Gemini flash model found; set the AI_MODEL variable. Models: %s" % ", ".join(names[:15]))
+    cands.sort(key=lambda n: (("preview" not in n), tuple(int(x) for x in re.findall(r"\d+", n))))
+    _MODEL_CACHE[base] = cands[-1]
+    print("auto-selected model:", cands[-1])
+    return cands[-1]
+
+
 def have_ai():
     e = os.environ.get
     return bool((e("ANTHROPIC_API_KEY") or "").strip() or ((e("AI_API_KEY") or "").strip() and (e("AI_BASE_URL") or "").strip()))
@@ -197,13 +218,20 @@ def call_llm(system, user):
         return _post(req)["content"][0]["text"]
     key, base = (e("AI_API_KEY") or "").strip(), (e("AI_BASE_URL") or "").strip().rstrip("/")
     if key and base:
-        if not model:
-            raise RuntimeError("AI_MODEL variable is required when using AI_API_KEY / AI_BASE_URL")
+        if not model and "openrouter.ai" in base:
+            model = "openrouter/free"          # OpenRouter's free-models router; or set AI_MODEL to a ":free" model id
+        model = model or _discover_model(base, key)
         body = {"model": model, "temperature": 0, "max_tokens": 2000,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(),
                                      {"content-type": "application/json", "authorization": "Bearer " + key})
-        return _post(req)["choices"][0]["message"]["content"]
+        for attempt in range(4):                      # free tiers rate-limit: wait and retry on 429
+            try:
+                return _post(req)["choices"][0]["message"].get("content") or ""
+            except RuntimeError as ex:
+                if str(ex).startswith("HTTP 429") and attempt < 3 and "day" not in str(ex).lower():
+                    time.sleep((20, 40, 70)[attempt]); continue
+                raise
     raise RuntimeError("no AI key configured: add repo secret ANTHROPIC_API_KEY, or AI_API_KEY + variables AI_BASE_URL and AI_MODEL")
 
 
@@ -291,6 +319,16 @@ def validate_rule(r, ctx):
             "all": toks["all"], "any": toks["any"], "no": toks["no"], "why": str(r.get("why") or "")[:200], "status": "proposed"}
 
 
+def _delay():
+    d = (os.environ.get("AI_DELAY") or "").strip()
+    if d:
+        return float(d)
+    base = os.environ.get("AI_BASE_URL") or ""
+    if "openrouter.ai" in base:
+        return 4.0                              # free tier: 20 requests/minute
+    return 7.0 if "generativelanguage.googleapis.com" in base else 0.0
+
+
 def process_items(items, meta, approved, proposed, ctx, llm, log=print):
     stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0, "first_error": ""}
     streak = 0
@@ -299,10 +337,15 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
     meta.setdefault("processed", {}); meta.setdefault("pending", {}); meta.setdefault("approved_meta", {})
     meta["pending"] = {k: v for k, v in meta["pending"].items() if v.get("first", ts) >= cutoff}
     toks = ", ".join(sorted(ctx.tokens)[:60])
+    delay = _delay()
+    first_call = True
     for it in items:
         if it["id"] in meta["processed"]:
             stats["skipped"] += 1; continue
         stats["items"] += 1
+        if delay and not first_call:
+            time.sleep(delay)
+        first_call = False
         try:
             out = parse_json(llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"])))
         except Exception as ex:
