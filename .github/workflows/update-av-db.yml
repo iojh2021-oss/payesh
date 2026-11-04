@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: update-av-db
+  cancel-in-progress: false
 jobs:
   update:
     runs-on: ubuntu-latest
