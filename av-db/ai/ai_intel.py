@@ -176,25 +176,35 @@ def _post(req):
         raise RuntimeError("not JSON (%s) body=%r" % (info, raw[:300]))
 
 
+def have_ai():
+    e = os.environ.get
+    return bool((e("ANTHROPIC_API_KEY") or "").strip() or ((e("AI_API_KEY") or "").strip() and (e("AI_BASE_URL") or "").strip()))
+
+
 def call_llm(system, user):
-    """Anthropic if ANTHROPIC_API_KEY is set, otherwise GitHub Models (free, uses GITHUB_TOKEN with models: read)."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    model = os.environ.get("AI_MODEL", "").strip()
+    """Provider is chosen by which secrets exist:
+       1) ANTHROPIC_API_KEY                      -> Anthropic Messages API (model: AI_MODEL, default claude-haiku-5-5)
+       2) AI_API_KEY + AI_BASE_URL (+ AI_MODEL)  -> any OpenAI-compatible /chat/completions endpoint
+    (GitHub Models was retired on 2026-07-30 and is no longer supported.)"""
+    e = os.environ.get
+    model = (e("AI_MODEL") or "").strip()
+    key = (e("ANTHROPIC_API_KEY") or "").strip()
     if key:
         body = {"model": model or "claude-haiku-5-5", "max_tokens": 2000, "system": system,
                 "messages": [{"role": "user", "content": user}]}
         req = urllib.request.Request("https://api.anthropic.com/v1/messages", json.dumps(body).encode(),
                                      {"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"})
         return _post(req)["content"][0]["text"]
-    tok = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not tok:
-        raise RuntimeError("no LLM credentials (ANTHROPIC_API_KEY or GITHUB_TOKEN)")
-    body = {"model": model or "openai/gpt-4o-mini", "temperature": 0, "max_tokens": 2000,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-    req = urllib.request.Request("https://models.github.ai/inference/chat/completions", json.dumps(body).encode(),
-                                 {"content-type": "application/json", "authorization": "Bearer " + tok,
-                                  "accept": "application/vnd.github+json"})
-    return _post(req)["choices"][0]["message"]["content"]
+    key, base = (e("AI_API_KEY") or "").strip(), (e("AI_BASE_URL") or "").strip().rstrip("/")
+    if key and base:
+        if not model:
+            raise RuntimeError("AI_MODEL variable is required when using AI_API_KEY / AI_BASE_URL")
+        body = {"model": model, "temperature": 0, "max_tokens": 2000,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(),
+                                     {"content-type": "application/json", "authorization": "Bearer " + key})
+        return _post(req)["choices"][0]["message"]["content"]
+    raise RuntimeError("no AI key configured: add repo secret ANTHROPIC_API_KEY, or AI_API_KEY + variables AI_BASE_URL and AI_MODEL")
 
 
 def parse_json(txt):
@@ -347,6 +357,13 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
 
 
 def main():
+    if not have_ai():
+        msg = "No AI configured: add repo secret ANTHROPIC_API_KEY (or AI_API_KEY + variables AI_BASE_URL, AI_MODEL). Nothing was changed."
+        print(msg)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write("### AI threat intel\n\n**%s**\n" % msg)
+        return
     cfg = load(SOURCES, {"feeds": []})
     custom = load(CUSTOM, {})
     items, status = fetch_items(cfg["feeds"])
@@ -354,6 +371,10 @@ def main():
     ctx = Ctx(custom, [host_of(f["url"]) for f in cfg["feeds"]] + [i["host"] for i in items])
     meta = load(META, {}); approved = load(APPROVED, {"hashes": {}, "packages": {}, "certs": {}, "domains": {}})
     proposed = load(PROPOSED, [])
+    done = meta.get("processed", {})
+    items = [i for i in items if i["id"] not in done]
+    items.sort(key=lambda i: not i["trusted"])                      # vendor research first
+    items = items[:int(os.environ.get("AI_MAX_ITEMS") or 40)]       # cost cap per run
     stats = process_items(items, meta, approved, proposed, ctx, call_llm)
     save(META, meta); save(APPROVED, approved); save(PROPOSED, proposed)
     line = "AI intel: %s | totals: %s" % (stats, {k: len(v) for k, v in approved.items()})

@@ -1,5 +1,5 @@
 name: AI threat intel
-# Every 3 hours: read security feeds -> AI extracts indicators -> deterministic validator -> av-db/ai-approved.json
+# Needs an AI key (see secrets below). Every 3 hours: read security feeds -> AI extracts indicators -> deterministic validator -> av-db/ai-approved.json
 # -> triggers "Update AV database", which builds, signs and publishes the av-db branch the app downloads.
 on:
   schedule:
@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-  models: read      # free GitHub Models for the AI step (no API key needed)
   actions: write    # to start "Update AV database" after new records
 concurrency:
   group: ai-intel
@@ -26,9 +25,11 @@ jobs:
         run: python3 av-db/ai/test_validate.py
       - name: Collect + AI analysis + validation
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional; used instead of GitHub Models when set
-          AI_MODEL: ${{ vars.AI_MODEL }}                         # optional override
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # option 1 (Anthropic)
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}                  # option 2: any OpenAI-compatible provider
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}                   #   e.g. https://api.example.com/v1
+          AI_MODEL: ${{ vars.AI_MODEL }}                         #   model name (optional for Anthropic)
+          AI_MAX_ITEMS: ${{ vars.AI_MAX_ITEMS }}                 # optional cost cap per run (default 40)
         run: python3 av-db/ai/ai_intel.py
       - name: Commit new records
         id: commit
