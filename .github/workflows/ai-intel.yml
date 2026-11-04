@@ -5,6 +5,11 @@ on:
   schedule:
     - cron: "37 */3 * * *"
   workflow_dispatch:
+    inputs:
+      selftest:
+        description: "Only test the AI with ONE built-in sample report (1 request, saves nothing)"
+        type: boolean
+        default: false
 permissions:
   contents: write
   actions: write    # to start "Update AV database" after new records
@@ -29,7 +34,9 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}                  # option 2: any OpenAI-compatible provider
           AI_BASE_URL: ${{ vars.AI_BASE_URL }}                   #   e.g. https://api.example.com/v1
           AI_MODEL: ${{ vars.AI_MODEL }}                         #   model name (optional for Anthropic)
-          AI_MAX_ITEMS: ${{ vars.AI_MAX_ITEMS }}                 # optional cost cap per run (default 40)
+          AI_MAX_ITEMS: ${{ vars.AI_MAX_ITEMS }}                 # optional cap per run (default 40)
+          AI_SELFTEST: ${{ inputs.selftest }}
+          AI_DELAY: ${{ vars.AI_DELAY }}                         # optional seconds between calls (Gemini default 7)
         run: python3 av-db/ai/ai_intel.py
       - name: Commit new records
         id: commit

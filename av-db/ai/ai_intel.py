@@ -330,7 +330,8 @@ def _delay():
 
 
 def process_items(items, meta, approved, proposed, ctx, llm, log=print):
-    stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0, "first_error": ""}
+    stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0, "first_error": "",
+             "parse_fail": 0, "not_android": 0, "no_iocs": 0, "sample": ""}
     streak = 0
     ts = iso(now())
     cutoff = iso(now() - timedelta(days=PENDING_DAYS))
@@ -347,7 +348,7 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
             time.sleep(delay)
         first_call = False
         try:
-            out = parse_json(llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"])))
+            raw_txt = llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"]))
         except Exception as ex:
             stats["ai_errors"] += 1; streak += 1
             stats["first_error"] = stats["first_error"] or str(ex)[:300]
@@ -356,10 +357,21 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
                 log("  3 AI failures in a row: stopping early (nothing is saved for these items)")
                 break
             continue
+        out = parse_json(raw_txt)
+        if not isinstance(out, dict):             # model did not return JSON: do NOT mark as processed, retry next run
+            stats["parse_fail"] += 1; streak += 1
+            stats["sample"] = stats["sample"] or (raw_txt or "")[:300]
+            if streak >= 3:
+                log("  3 unparseable AI answers in a row: stopping early")
+                break
+            continue
         streak = 0
         meta["processed"][it["id"]] = ts
-        if not out or not out.get("android_related"):
+        if not out.get("android_related"):
+            stats["not_android"] += 1
             continue
+        if not out.get("iocs") and not out.get("proposed_rules"):
+            stats["no_iocs"] += 1
         for raw in (out.get("iocs") or [])[:60]:
             if stats["accepted"] >= MAX_NEW_PER_RUN:
                 break
@@ -399,7 +411,37 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
     return stats
 
 
+SELFTEST_H = "ab" * 32
+SELFTEST_TEXT = ("Researchers describe a new Android banking trojan named TestBanker that abuses Accessibility services to draw "
+                 "overlays and read SMS. One sample has SHA-256 %s . The malware contacts the command-and-control server "
+                 "test-c2-example[.]xyz and is distributed as the package com.testbanker.fake. " % SELFTEST_H) + "Analysis details follow. " * 12
+
+
+def selftest(llm=None):
+    """One AI request on a built-in fake report; shows what the model returns and what the validator accepts. Saves nothing."""
+    llm = llm or call_llm
+    it = {"id": "selftest", "url": "https://selftest.invalid/p", "src": "selftest", "host": "selftest.invalid", "trusted": True,
+          "text": SELFTEST_TEXT}
+    raw = llm(SYSTEM, "Allowed rule tokens: overlay_on, a11y_on, sms_any\n\n<report source=\"selftest\">\n%s\n</report>" % it["text"])
+    out = parse_json(raw)
+    res = {"raw": (raw or "")[:500], "json_ok": isinstance(out, dict)}
+    if isinstance(out, dict):
+        ctx = Ctx({}, [])
+        ok = [validate_ioc(i, it, ctx) for i in (out.get("iocs") or [])]
+        res.update(android=bool(out.get("android_related")), proposed=len(out.get("iocs") or []), valid=[v for v in ok if v])
+    return res
+
+
 def main():
+    if os.environ.get("AI_SELFTEST") == "true" and have_ai():
+        r = selftest()
+        text = "AI selftest: json_ok=%s android=%s proposed=%s valid=%s\nraw: %s" % (
+            r["json_ok"], r.get("android"), r.get("proposed"), r.get("valid"), r["raw"])
+        print(text)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write("### AI selftest\n\n```\n%s\n```\n" % text)
+        return
     if not have_ai():
         msg = "No AI configured: add repo secret ANTHROPIC_API_KEY (or AI_API_KEY + variables AI_BASE_URL, AI_MODEL). Nothing was changed."
         print(msg)
@@ -425,6 +467,11 @@ def main():
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
             f.write("### AI threat intel\n\n`%s`\n\nfeeds: `%s`\n" % (line, status))
+    if stats["sample"]:
+        print("UNPARSEABLE AI ANSWER (sample):", stats["sample"])
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write("\n**Model did not return JSON. Sample:** `%s`\n" % stats["sample"].replace("`", "'").replace("\n", " "))
     if stats["first_error"]:
         print("AI ERROR:", stats["first_error"])
         if os.environ.get("GITHUB_STEP_SUMMARY"):
