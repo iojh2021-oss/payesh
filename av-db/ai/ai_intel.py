@@ -178,6 +178,7 @@ def _post(req):
 
 
 _MODEL_CACHE = {}
+MODELS_SEEN = []
 
 
 def _discover_model(base, key):
@@ -222,13 +223,20 @@ def call_llm(system, user):
         if not model and "openrouter.ai" in base:
             model = "openrouter/free"          # OpenRouter's free-models router; or set AI_MODEL to a ":free" model id
         model = model or _discover_model(base, key)
-        body = {"model": model, "temperature": 0, "max_tokens": 2000,
+        body = {"model": model, "temperature": 0, "max_tokens": 4000,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(),
                                      {"content-type": "application/json", "authorization": "Bearer " + key})
         for attempt in range(4):                      # free tiers rate-limit: wait and retry on 429
             try:
-                return _post(req)["choices"][0]["message"].get("content") or ""
+                data = _post(req)
+                used = str(data.get("model") or "")
+                if used and used not in MODELS_SEEN:
+                    MODELS_SEEN.append(used)
+                ch = data["choices"][0]
+                if ch.get("finish_reason") == "length":
+                    print("  warning: answer cut off by the token limit (model %s)" % used)
+                return ch["message"].get("content") or ""
             except RuntimeError as ex:
                 if str(ex).startswith("HTTP 429") and attempt < 3 and "day" not in str(ex).lower():
                     time.sleep((20, 40, 70)[attempt]); continue
@@ -416,7 +424,16 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print, fetch=No
                 return "stop", None
             return "skip", None
         out = parse_json(raw_txt)
-        if not isinstance(out, dict):             # not JSON: do NOT mark as processed, retry next run
+        if not isinstance(out, dict):             # truncated / not JSON: ask once more (free routers may pick another model)
+            if delay:
+                time.sleep(delay)
+            st["calls"] += 1
+            try:
+                raw_txt = llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"]))
+                out = parse_json(raw_txt)
+            except Exception:
+                out = None
+        if not isinstance(out, dict):             # still not JSON: do NOT mark as processed, retry next run
             stats["parse_fail"] += 1; st["streak"] += 1
             stats["sample"] = stats["sample"] or (raw_txt or "")[:300]
             if st["streak"] >= 3:
@@ -513,9 +530,11 @@ def selftest(llm=None):
     llm = llm or call_llm
     it = {"id": "selftest", "url": "https://selftest.invalid/p", "src": "selftest", "host": "selftest.invalid", "trusted": True,
           "text": SELFTEST_TEXT}
-    raw = llm(SYSTEM, "Allowed rule tokens: overlay_on, a11y_on, sms_any\n\n<report source=\"selftest\">\n%s\n</report>" % it["text"])
-    out = parse_json(raw)
-    res = {"raw": (raw or "")[:500], "json_ok": isinstance(out, dict)}
+    ask = lambda: llm(SYSTEM, "Allowed rule tokens: overlay_on, a11y_on, sms_any\n\n<report source=\"selftest\">\n%s\n</report>" % it["text"])
+    raw = ask(); out = parse_json(raw); tries = 1
+    if not isinstance(out, dict):
+        raw = ask(); out = parse_json(raw); tries = 2
+    res = {"raw": (raw or "")[:500], "json_ok": isinstance(out, dict), "len": len(raw or ""), "tries": tries}
     if isinstance(out, dict):
         ctx = Ctx({}, [])
         ok = [validate_ioc(i, it, ctx) for i in (out.get("iocs") or [])]
@@ -526,8 +545,8 @@ def selftest(llm=None):
 def main():
     if os.environ.get("AI_SELFTEST") == "true" and have_ai():
         r = selftest()
-        text = "AI selftest: json_ok=%s android=%s proposed=%s valid=%s\nraw: %s" % (
-            r["json_ok"], r.get("android"), r.get("proposed"), r.get("valid"), r["raw"])
+        text = "AI selftest: json_ok=%s tries=%s len=%s models=%s android=%s proposed=%s valid=%s\nraw: %s" % (
+            r["json_ok"], r["tries"], r["len"], MODELS_SEEN, r.get("android"), r.get("proposed"), r.get("valid"), r["raw"])
         print(text)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
@@ -555,7 +574,7 @@ def main():
                           mb=mb_lookup if (os.environ.get("ABUSECH_AUTH_KEY") or "").strip() else None,
                           deep_budget=int(os.environ.get("AI_MAX_DEEP") or DEEP_PER_RUN))
     save(META, meta); save(APPROVED, approved); save(PROPOSED, proposed)
-    line = "AI intel: %s | totals: %s" % (stats, {k: len(v) for k, v in approved.items()})
+    line = "AI intel: %s | models: %s | totals: %s" % (stats, MODELS_SEEN, {k: len(v) for k, v in approved.items()})
     print(line)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:

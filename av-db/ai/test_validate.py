@@ -108,4 +108,12 @@ assert not appr["hashes"] and st["pending"] == 1
 dz = {"id": "d", "url": "https://a.org/p", "src": "a", "host": "a.org", "trusted": True, "text": "C2 server is test-c2-example[.]xyz and more. " * 10}
 v = A.validate_ioc({"type": "domain", "value": "test-c2-example[.]xyz", "family": "T", "evidence": "C2 server is test-c2-example[.]xyz and more."}, dz, A.Ctx({}, []))
 assert v == ("domain", "test-c2-example.xyz", "AI.T"), v
+
+# 10) truncated first answer -> one retry succeeds, nothing counted as a failure
+seq = iter(['{"android_related": true, "iocs', json.dumps({"android_related": False})])
+meta = {}
+st = A.process_items([item("t1", "securelist.com", True)], meta, {"hashes": {}}, [], A.Ctx({}, []), lambda s, u: next(seq), log=lambda *a: None)
+assert st["parse_fail"] == 0 and st["not_android"] == 1 and "t1" in meta["processed"], st
+r = A.selftest(lambda s, u: '{"android_related": true, "iocs')
+assert not r["json_ok"] and r["tries"] == 2 and r["len"] > 0
 print("ALL VALIDATOR TESTS PASSED")
