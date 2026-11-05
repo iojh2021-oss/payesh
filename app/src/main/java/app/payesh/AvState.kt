@@ -229,6 +229,7 @@ object AvState {
             var cloud = 0
             try {
                 val env = AvEnv(app)
+                env.deep = mode == 2
                 st("بررسی وضعیت امنیتی دستگاه")
                 posture.value = Av.posture(app, env)
 
@@ -237,11 +238,12 @@ object AvState {
                 val names = pm.getInstalledApplications(0).map { it.packageName }
                 for ((i, pkg) in names.withIndex()) {
                     if (cancel) break
-                    if (i % 3 == 0) st("تحلیل برنامه‌ها (رفتار، دسترسی‌ها، امضا)", i, names.size, pkg)
+                    if (i % 3 == 0) st(if (mode == 2) "تحلیل عمیق برنامه‌ها (کد، کتابخانه‌ها، مانیفست)" else "تحلیل برنامه‌ها (رفتار، دسترسی‌ها، امضا)", i, names.size, pkg)
                     if (pkg == env.self) continue
-                    val pi = try { pm.getPackageInfo(pkg, Av.FLAGS) } catch (_: Exception) { continue }
+                    val pi = (if (mode == 2) try { pm.getPackageInfo(pkg, Av.FLAGS or Deep.FLAGS_EXTRA) } catch (_: Exception) { null } else null)
+                        ?: (try { pm.getPackageInfo(pkg, Av.FLAGS) } catch (_: Exception) { null }) ?: continue
                     val label = try { pi.applicationInfo?.loadLabel(pm)?.toString() ?: pkg } catch (_: Exception) { pkg }
-                    byId[pkg] = Av.analyze(env, pi, label, true, mode == 1)
+                    byId[pkg] = Av.analyze(env, pi, label, true, mode >= 1)
                 }
 
                 // 2) files: APKs, disguised executables, double extensions, ELF/DEX, EICAR, known hashes
@@ -252,7 +254,7 @@ object AvState {
                         val skip = HashSet<String>()
                         for (r in roots) { skip.add(File(r, "Android/data").path); skip.add(File(r, "Android/obb").path) }
                         val stack = java.util.ArrayDeque<File>()
-                        if (mode == 1) roots.forEach { stack.push(it) }
+                        if (mode >= 1) roots.forEach { stack.push(it) }
                         else for (r in roots) for (d in Av.SMART_DIRS) { val f = File(r, d); if (f.isDirectory) stack.push(f) }
                         while (stack.isNotEmpty() && !cancel) {
                             val dir = stack.pop()

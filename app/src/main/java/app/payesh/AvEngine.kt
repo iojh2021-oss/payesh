@@ -47,6 +47,7 @@ class AvEnv(val ctx: Context) {
     val trusted: Set<String> = AvPrefs.trusted(ctx)
     val db: AvDb = AvDbStore.load(ctx)
     val sigs: Map<String, String> = AvPrefs.signatures(ctx) + db.hashes
+    @Volatile var deep = false // deep scan mode: also analyze code, native libraries, manifest, archives and scripts
 
     private fun enabledPkgs(key: String): Set<String> {
         val raw = try { Settings.Secure.getString(ctx.contentResolver, key) } catch (_: Exception) { null } ?: ""
@@ -86,7 +87,7 @@ object Vt {
             val a = p.getString(sha, "0|0|0")!!.split("|")
             return VtRes(a[0].toIntOrNull() ?: 0, a[1].toIntOrNull() ?: 0, true)
         }
-        val con = Pq.open("https://www.virustotal.com/api/v3/files/$sha")
+        val con = URL("https://www.virustotal.com/api/v3/files/$sha").openConnection() as HttpURLConnection
         con.connectTimeout = 10_000
         con.readTimeout = 15_000
         con.setRequestProperty("x-apikey", key)
@@ -337,6 +338,14 @@ object Av {
                 }
             }
         }
+        var deepFeat: Set<String> = emptySet()
+        if (env.deep && ai != null && !system) {
+            try {
+                val d = Deep.app(env, pi, ai, sideloaded)
+                deepFeat = d.feats
+                for ((n, r) in d.notes) add(n, r)
+            } catch (e: Exception) { Plog.w("deep scan failed for $pkg: $e") }
+        }
         if (installed && sideloaded && score >= 25 && System.currentTimeMillis() - pi.firstInstallTime < 48 * 3_600_000L)
             add(5, "تازه (کمتر از ۴۸ ساعت) نصب شده")
 
@@ -357,6 +366,7 @@ object Av {
             f(dbg, "debug_cert"); f(payload, "payload"); f(spy >= 5, "spy_many"); f(packerFam != null, "packer"); f(c2hit, "c2_domain"); f(packedBlob, "packed_blob")
             f(sideloaded && ai != null && ai.targetSdkVersion < 23, "old_target")
             for (pn in perms) feat.add("perm:" + pn.substringAfterLast('.'))
+            for (x in deepFeat) feat.add("dex:" + x)
             for (r in env.db.rules) if (r.matches(feat)) add(r.score, "قانون پایگاه تهدیدها: ${r.name}")
         }
 
@@ -426,13 +436,15 @@ object Av {
         if (dex) add(30, "فایل DEX مستقل (کد اجرایی اندروید)")
         if (mz && (ext == "exe" || ext == "scr" || ext == "dll")) add(20, "فایل اجرایی ویندوز روی گوشی")
 
+        if (env.deep) for ((n, r) in Deep.fileNotes(env, f, ext, len)) add(n, r)
+
         var title = name
         var kind = 1
         var extraReasons: List<String> = emptyList()
         var apkScore = 0
         var sha: String? = null
         if (ext == "apk" && pk) {
-            val pi = try { env.pm.getPackageArchiveInfo(f.path, FLAGS) } catch (_: Exception) { null }
+            val pi = try { env.pm.getPackageArchiveInfo(f.path, FLAGS or (if (env.deep) Deep.FLAGS_EXTRA else 0)) } catch (_: Exception) { null }
             if (pi != null) {
                 pi.applicationInfo?.let { it.sourceDir = f.path; it.publicSourceDir = f.path }
                 val label = try { pi.applicationInfo?.loadLabel(env.pm)?.toString() } catch (_: Exception) { null } ?: pi.packageName

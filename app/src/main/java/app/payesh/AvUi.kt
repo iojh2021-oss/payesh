@@ -332,7 +332,12 @@ fun ShieldHero(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AvBtn("اسکن هوشمند", true, Accent, Modifier.weight(1f)) { onScan(0) }
                 AvBtn("اسکن کامل", false, Accent, Modifier.weight(1f)) { onScan(1) }
+                AvBtn("اسکن عمیق", false, Violet, Modifier.weight(1f)) { onScan(2) }
             }
+            Text(
+                "اسکن عمیق: علاوه بر اسکن کامل، داخل کد DEX و کتابخانه‌های native برنامه‌ها، مانیفست، آرشیوها (APK داخل ZIP)، اسکریپت‌ها و فایل‌های پنهان‌شده در تصویر/PDF را هم بررسی می‌کند. چند دقیقه طول می‌کشد.",
+                color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp)
+            )
         }
     }
 }
