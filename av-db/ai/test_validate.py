@@ -103,4 +103,9 @@ meta, appr = {}, {"hashes": {}, "packages": {}, "certs": {}, "domains": {}}
 st = A.process_items([item("mb2", "blog.example.net", False)], meta, appr, [], A.Ctx({}, []), llm_one, log=lambda *a: None, mb=lambda h: None)
 assert not appr["hashes"] and st["pending"] == 1
 
+
+# 9) a model that copies a DEFANGED domain exactly (as real reports write it) must still be accepted
+dz = {"id": "d", "url": "https://a.org/p", "src": "a", "host": "a.org", "trusted": True, "text": "C2 server is test-c2-example[.]xyz and more. " * 10}
+v = A.validate_ioc({"type": "domain", "value": "test-c2-example[.]xyz", "family": "T", "evidence": "C2 server is test-c2-example[.]xyz and more."}, dz, A.Ctx({}, []))
+assert v == ("domain", "test-c2-example.xyz", "AI.T"), v
 print("ALL VALIDATOR TESTS PASSED")

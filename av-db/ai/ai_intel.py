@@ -49,7 +49,7 @@ Schema:
  "iocs": [{"type": "sha256|domain|package|cert_sha256", "value": "...", "family": "malware family name", "evidence": "short verbatim quote from the report that contains the value"}],
  "proposed_rules": [{"id": "lowercase.dotted", "name": "short Persian title", "score": 1-15, "all": [tokens], "any": [tokens], "no": [tokens], "why": "one sentence"}]}
 Rules:
-- Only indicators the report explicitly says are malicious (hashes of malicious APKs, C2/payload domains, package names of malicious apps, malicious signing-certificate hashes).
+- Write domains with plain dots (evil.com), not defanged (evil[.]com). Only indicators the report explicitly says are malicious (hashes of malicious APKs, C2/payload domains, package names of malicious apps, malicious signing-certificate hashes).
 - Never include legitimate services, vendors, the report's own website, or example values. Copy values exactly. If unsure, leave it out.
 - proposed_rules: only if the report describes a behaviour pattern; use ONLY tokens from the allowed list; otherwise [].
 - If the report is not about Android malware: {"android_related": false, "iocs": [], "proposed_rules": []}"""
@@ -267,7 +267,7 @@ def validate_ioc(ioc, item, ctx):
     """-> (kind, value, family) or None"""
     if not isinstance(ioc, dict):
         return None
-    kind, val, fam, ev = ioc.get("type"), str(ioc.get("value") or "").strip(), ioc.get("family"), str(ioc.get("evidence") or "")
+    kind, val, fam, ev = ioc.get("type"), refang(str(ioc.get("value") or "")).strip(), ioc.get("family"), str(ioc.get("evidence") or "")
     if kind not in KINDS or not val or len(val) > 255:
         return None
     text = refang(item["text"])
