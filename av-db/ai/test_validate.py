@@ -144,4 +144,11 @@ assert A._MODEL_CACHE["or_list"] == ["meta-llama/llama-3.3-70b-instruct:free"]  
 A._MODEL_CACHE.clear(); A._OR_BAD.clear(); A.MODELS_SEEN.clear(); OR.fail_first = True
 assert A.call_llm("s", "u") == '{"android_related": false}' and "openrouter/free" in A.MODELS_SEEN and A._OR_BAD
 print("openrouter model selection OK")
+
+# 12) rejection reasons are reported
+why = []
+assert A.validate_ioc({"type": "sha256", "value": H_FAKE, "family": "X", "evidence": "Sample SHA-256: " + H_FAKE}, item("w", "securelist.com", True), A.Ctx({}, []), why) is None
+assert why == ["value not found in the report text"], why
+why = []
+assert A.validate_ioc({"type": "domain", "value": "google.com", "family": "X", "evidence": "such as google.com and"}, item("w", "securelist.com", True), A.Ctx({}, []), why) is None and "allow-listed" in why[0], why
 print("ALL VALIDATOR TESTS PASSED")

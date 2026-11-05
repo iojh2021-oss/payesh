@@ -1,5 +1,5 @@
 {
-  "note": "trusted=true: vendor research blogs whose hash/package/cert IOCs may be accepted from a single source. Domains ALWAYS need 2 independent sources (or MalwareBazaar confirms a hash). Feeds that fail are skipped; the *_UNVERIFIED feed URLs were not checked: remove any that show 'failed' in the run summary.",
+  "note": "trusted=true: vendor research blogs whose hash/package/cert IOCs may be accepted from a single source. Domains ALWAYS need 2 independent sources (or MalwareBazaar confirms a hash). Feeds that fail are skipped (checked 2026-11: McAfee Labs returned 403 and Zimperium 404, so they were removed).",
   "feeds": [
     {
       "name": "Securelist",
@@ -17,23 +17,13 @@
       "trusted": true
     },
     {
-      "name": "McAfeeLabs_UNVERIFIED",
-      "url": "https://www.mcafee.com/blogs/other-blogs/mcafee-labs/feed/",
-      "trusted": true
-    },
-    {
-      "name": "Cyble_UNVERIFIED",
+      "name": "Cyble",
       "url": "https://cyble.com/blog/feed/",
       "trusted": true
     },
     {
-      "name": "CheckPointResearch_UNVERIFIED",
+      "name": "CheckPointResearch",
       "url": "https://research.checkpoint.com/feed/",
-      "trusted": true
-    },
-    {
-      "name": "Zimperium_UNVERIFIED",
-      "url": "https://zimperium.com/blog/feed/",
       "trusted": true
     },
     {

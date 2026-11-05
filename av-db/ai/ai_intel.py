@@ -328,35 +328,41 @@ class Ctx:
         return any(d == a or d.endswith("." + a) or a.endswith("." + d) for a in self.allow_dom)
 
 
-def validate_ioc(ioc, item, ctx):
-    """-> (kind, value, family) or None"""
-    if not isinstance(ioc, dict):
+def validate_ioc(ioc, item, ctx, why=None):
+    """-> (kind, value, family) or None. If `why` is a list, the rejection reason is appended to it."""
+    def no(reason):
+        if why is not None:
+            why.append(reason)
         return None
+    if not isinstance(ioc, dict):
+        return no("not an object")
     kind, val, fam, ev = ioc.get("type"), refang(str(ioc.get("value") or "")).strip(), ioc.get("family"), str(ioc.get("evidence") or "")
     if kind not in KINDS or not val or len(val) > 255:
-        return None
+        return no("bad type/value")
     text = refang(item["text"])
     low = text.lower()
     if kind in ("sha256", "domain", "cert_sha256"):
         val = val.lower()
     if val.lower() not in low:                           # anti-hallucination: value must be in the report
-        return None
+        return no("value not found in the report text")
     ev_n = norm_ws(refang(ev))
     if not (8 <= len(ev_n) <= 400) or ev_n not in norm_ws(text):   # evidence must be a verbatim quote
-        return None
+        return no("evidence is not a verbatim quote")
     family = B.clean_name(fam, "Unknown")
     if kind == "sha256":
-        ok = bool(B.HEX64.match(val))
+        ok = bool(B.HEX64.match(val)); r = "not a sha256"
     elif kind == "cert_sha256":
         val = B.norm_cert(val)
-        ok = bool(B.HEX40_64.match(val))
+        ok = bool(B.HEX40_64.match(val)); r = "not a certificate hash"
     elif kind == "package":
         ok = (bool(B.PKG.match(val)) and 3 <= len(val) <= 200 and not val.startswith(PROTECTED_PKG) and val not in ctx.allow_pkg)
+        r = "invalid, protected or allow-listed package"
     else:  # domain
         ok = (bool(B.HOST.match(val)) and "." in val and not IP4.match(val) and not val.endswith((".local", ".internal", ".example"))
               and not ctx.domain_allowed(val) and reg_domain(val) not in ctx.site_hosts)
+        r = "invalid, allow-listed or the report's own domain"
     if not ok:
-        return None
+        return no(r)
     return kind, val, "AI." + family
 
 
@@ -599,7 +605,42 @@ def selftest(llm=None):
     return res
 
 
+def probe(url):
+    """Debug tool: download one article, run the full extraction + validation, print every verdict. Saves nothing."""
+    lines = []
+    art = fetch_article(url)
+    cond = condense(art)
+    lines.append("article chars=%d  condensed chars=%d" % (len(art), len(cond)))
+    if not art:
+        lines.append("could not download the article (needs https and a normal HTML page)")
+        return lines
+    text = cond or art[:TEXT_MAX]
+    if not cond:
+        lines.append("no indicator-like strings found: sending the first %d chars instead" % len(text))
+    it = {"id": "probe", "url": url, "src": "probe", "host": host_of(url), "trusted": True, "text": text}
+    custom = load(CUSTOM, {})
+    ctx = Ctx(custom, [it["host"]])
+    raw = call_llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"probe\">\n%s\n</report>" % (", ".join(sorted(ctx.tokens)[:60]), text))
+    out = parse_json(raw)
+    lines.append("models: %s | json_ok=%s | raw length=%d" % (MODELS_SEEN, isinstance(out, dict), len(raw or "")))
+    if not isinstance(out, dict):
+        lines.append("raw: " + (raw or "")[:300]); return lines
+    lines.append("android_related=%s, AI proposed %d indicators" % (out.get("android_related"), len(out.get("iocs") or [])))
+    for ioc in (out.get("iocs") or [])[:40]:
+        why = []
+        v = validate_ioc(ioc, it, ctx, why)
+        lines.append("%s %s %s%s" % ("ACCEPTED " if v else "REJECTED ", ioc.get("type"), str(ioc.get("value"))[:70], "" if v else "  <- " + why[0]))
+    return lines
+
+
 def main():
+    if os.environ.get("AI_PROBE_URL", "").strip() and have_ai():
+        res = "\n".join(probe(os.environ["AI_PROBE_URL"].strip()))
+        print(res)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write("### AI probe\n\n```\n%s\n```\n" % res)
+        return
     if os.environ.get("AI_SELFTEST") == "true" and have_ai():
         r = selftest()
         text = "AI selftest: json_ok=%s tries=%s len=%s models=%s android=%s proposed=%s valid=%s\nraw: %s" % (

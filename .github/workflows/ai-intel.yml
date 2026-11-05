@@ -10,6 +10,10 @@ on:
         description: "Only test the AI with ONE built-in sample report (1 request, saves nothing)"
         type: boolean
         default: false
+      probe_url:
+        description: "Optional: analyse ONE article URL (https) and show what the AI extracted. Saves nothing."
+        type: string
+        default: ""
 permissions:
   contents: write
   actions: write    # to start "Update AV database" after new records
@@ -36,6 +40,7 @@ jobs:
           AI_MODEL: ${{ vars.AI_MODEL }}                         #   model name (optional for Anthropic)
           AI_MAX_ITEMS: ${{ vars.AI_MAX_ITEMS }}                 # optional cap per run (default 40)
           AI_SELFTEST: ${{ inputs.selftest }}
+          AI_PROBE_URL: ${{ inputs.probe_url }}
           ABUSECH_AUTH_KEY: ${{ secrets.ABUSECH_AUTH_KEY }}      # optional: confirm hashes against MalwareBazaar
           AI_MAX_DEEP: ${{ vars.AI_MAX_DEEP }}                   # optional: full-article re-reads per run (default 10)
           AI_DELAY: ${{ vars.AI_DELAY }}                         # optional seconds between calls (Gemini default 7)
