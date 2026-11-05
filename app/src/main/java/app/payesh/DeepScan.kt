@@ -245,7 +245,7 @@ object Deep {
             var grant = 0
             for (s in pi.services.orEmpty()) if (s.exported && s.permission == null) exposed++
             for (r in pi.receivers.orEmpty()) if (r.exported && r.permission == null) exposed++
-            for (p in pi.providers.orEmpty()) if (p.exported && p.permission == null && p.readPermission == null && p.writePermission == null) { exposed++; if (p.grantUriPermissions) grant++ }
+            for (p in pi.providers.orEmpty()) if (p.exported && p.readPermission == null && p.writePermission == null) { exposed++; if (p.grantUriPermissions) grant++ }
             val hijack = pi.activities.orEmpty().count {
                 it.exported && it.taskAffinity != null && it.taskAffinity != pi.packageName && (it.flags and ActivityInfo.FLAG_ALLOW_TASK_REPARENTING) != 0
             }
