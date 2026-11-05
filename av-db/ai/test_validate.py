@@ -70,4 +70,37 @@ assert st["skipped"] == 1 and st["items"] == 0
 assert A.refang("hxxps://evil[.]com/a(.)b") == "https://evil.com/a.b"
 assert A.parse_json("```json\n{\"a\": 1}\n```") == {"a": 1}
 assert A.parse_json("sorry, no") is None
+
+# 7) deep read: feed excerpt has no IOCs, the full article does
+FULL = ("Intro about the Android banker. " + "filler text. " * 300 + "IOCs: sample SHA-256 %s and C2 evil-deep[.]xyz ." % ("c" * 63 + "9")
+        + " more filler. " * 200)
+def llm_deep(system, user):
+    if "evil-deep.xyz" in user:       # second call sees the condensed full article
+        return json.dumps({"android_related": True, "iocs": [
+            {"type": "sha256", "value": "c" * 63 + "9", "family": "Deepx", "evidence": "sample SHA-256 " + "c" * 63 + "9"}]})
+    return json.dumps({"android_related": True, "iocs": []})
+EXC = "Android banker story. " * 15
+it = item("deep1", "securelist.com", True, EXC)
+ctx = A.Ctx({}, ["securelist.com"])
+meta, appr = {}, {"hashes": {}, "packages": {}, "certs": {}, "domains": {}}
+st = A.process_items([it], meta, appr, [], ctx, llm_deep, log=lambda *a: None, fetch=lambda u: FULL, deep_budget=5)
+assert st["deep"] == 1 and ("c" * 63 + "9") in appr["hashes"], (st, appr)
+assert "deep1" in meta["deep"]
+st = A.process_items([dict(it, id="deep2")], meta, appr, [], ctx, llm_deep, log=lambda *a: None, fetch=lambda u: FULL, deep_budget=0)
+assert st["deep"] == 0                                       # budget respected
+# condense: nothing indicator-like -> "" (no AI call needed); hash window kept; length bounded
+assert A.condense("just prose without anything interesting " * 50) == ""
+c = A.condense(FULL); assert ("c" * 63 + "9") in c and "evil-deep.xyz" in c and len(c) <= A.TEXT_MAX
+
+# 8) MalwareBazaar confirmation accepts a hash from a single UNtrusted source; unknown hash stays pending
+def llm_one(system, user):
+    return json.dumps({"android_related": True, "iocs": [
+        {"type": "sha256", "value": H1, "family": "Hydrax", "evidence": "Sample SHA-256: %s" % H1}]})
+meta, appr = {}, {"hashes": {}, "packages": {}, "certs": {}, "domains": {}}
+st = A.process_items([item("mb1", "blog.example.net", False)], meta, appr, [], A.Ctx({}, []), llm_one, log=lambda *a: None, mb=lambda h: "Hydrax")
+assert appr["hashes"][H1] == "AI.Hydrax" and st["mb_verified"] == 1, (st, appr)
+meta, appr = {}, {"hashes": {}, "packages": {}, "certs": {}, "domains": {}}
+st = A.process_items([item("mb2", "blog.example.net", False)], meta, appr, [], A.Ctx({}, []), llm_one, log=lambda *a: None, mb=lambda h: None)
+assert not appr["hashes"] and st["pending"] == 1
+
 print("ALL VALIDATOR TESTS PASSED")

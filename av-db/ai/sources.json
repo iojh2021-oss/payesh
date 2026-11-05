@@ -1,11 +1,55 @@
 {
-  "note": "trusted=true: vendor research blogs whose hash/package/cert IOCs may be accepted from a single source. Domains ALWAYS need 2 independent sources. Feeds that fail are skipped; edit freely.",
+  "note": "trusted=true: vendor research blogs whose hash/package/cert IOCs may be accepted from a single source. Domains ALWAYS need 2 independent sources (or MalwareBazaar confirms a hash). Feeds that fail are skipped; the *_UNVERIFIED feed URLs were not checked: remove any that show 'failed' in the run summary.",
   "feeds": [
-    {"name": "Securelist",       "url": "https://securelist.com/feed/",                          "trusted": true},
-    {"name": "WeLiveSecurity",   "url": "https://www.welivesecurity.com/en/feed/",               "trusted": true},
-    {"name": "GoogleSecurity",   "url": "https://security.googleblog.com/feeds/posts/default",    "trusted": true},
-    {"name": "MalwarebytesLabs", "url": "https://www.malwarebytes.com/blog/feed/index.xml",       "trusted": true},
-    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/",                 "trusted": false},
-    {"name": "TheHackerNews",    "url": "https://feeds.feedburner.com/TheHackersNews",            "trusted": false}
+    {
+      "name": "Securelist",
+      "url": "https://securelist.com/feed/",
+      "trusted": true
+    },
+    {
+      "name": "WeLiveSecurity",
+      "url": "https://www.welivesecurity.com/en/feed/",
+      "trusted": true
+    },
+    {
+      "name": "GoogleSecurity",
+      "url": "https://security.googleblog.com/feeds/posts/default",
+      "trusted": true
+    },
+    {
+      "name": "McAfeeLabs_UNVERIFIED",
+      "url": "https://www.mcafee.com/blogs/other-blogs/mcafee-labs/feed/",
+      "trusted": true
+    },
+    {
+      "name": "Cyble_UNVERIFIED",
+      "url": "https://cyble.com/blog/feed/",
+      "trusted": true
+    },
+    {
+      "name": "CheckPointResearch_UNVERIFIED",
+      "url": "https://research.checkpoint.com/feed/",
+      "trusted": true
+    },
+    {
+      "name": "Zimperium_UNVERIFIED",
+      "url": "https://zimperium.com/blog/feed/",
+      "trusted": true
+    },
+    {
+      "name": "MalwarebytesLabs",
+      "url": "https://www.malwarebytes.com/blog/feed/index.xml",
+      "trusted": true
+    },
+    {
+      "name": "BleepingComputer",
+      "url": "https://www.bleepingcomputer.com/feed/",
+      "trusted": false
+    },
+    {
+      "name": "TheHackerNews",
+      "url": "https://feeds.feedburner.com/TheHackersNews",
+      "trusted": false
+    }
   ]
 }

@@ -36,6 +36,8 @@ jobs:
           AI_MODEL: ${{ vars.AI_MODEL }}                         #   model name (optional for Anthropic)
           AI_MAX_ITEMS: ${{ vars.AI_MAX_ITEMS }}                 # optional cap per run (default 40)
           AI_SELFTEST: ${{ inputs.selftest }}
+          ABUSECH_AUTH_KEY: ${{ secrets.ABUSECH_AUTH_KEY }}      # optional: confirm hashes against MalwareBazaar
+          AI_MAX_DEEP: ${{ vars.AI_MAX_DEEP }}                   # optional: full-article re-reads per run (default 10)
           AI_DELAY: ${{ vars.AI_DELAY }}                         # optional seconds between calls (Gemini default 7)
         run: python3 av-db/ai/ai_intel.py
       - name: Commit new records

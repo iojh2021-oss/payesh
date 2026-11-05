@@ -12,7 +12,7 @@ The AI never writes to the database. Every IOC it proposes must pass checks that
   * hard cap per run, domains expire after DOMAIN_TTL_DAYS
 Report text is treated as untrusted data (prompt-injection safe: AI output is only ever data that gets re-checked).
 """
-import html, json, os, re, sys, time, urllib.error, urllib.request, xml.etree.ElementTree as ET
+import html, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -29,6 +29,7 @@ SOURCES = os.path.join(HERE, "sources.json")
 CUSTOM = os.path.join(AVDB, "custom.json")
 
 MAX_NEW_PER_RUN = 60
+DEEP_PER_RUN = 10
 MAX_PROPOSED_RULES = 30
 DOMAIN_TTL_DAYS = 45
 PENDING_DAYS = 7
@@ -329,50 +330,106 @@ def _delay():
     return 7.0 if "generativelanguage.googleapis.com" in base else 0.0
 
 
-def process_items(items, meta, approved, proposed, ctx, llm, log=print):
+CAND_SHA = re.compile(r"\b[a-fA-F0-9]{64}\b")
+PKG_CAND = re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,}\b")
+DEFANGED = re.compile(r"[A-Za-z0-9-]+(?:\s*(?:\[\.\]|\(\.\))\s*[A-Za-z0-9-]+)+")
+
+
+def condense(text, limit=TEXT_MAX, radius=260):
+    """Long article -> only the passages around possible indicators (hashes, defanged domains, package names).
+    Returns "" when the article contains nothing that could be an indicator (saves an AI request)."""
+    rt = refang(text)
+    p0 = [m.span() for m in CAND_SHA.finditer(rt)]
+    for m in DEFANGED.finditer(text):
+        v = refang(m.group(0)).replace(" ", "")
+        i = rt.find(v)
+        if i >= 0:
+            p0.append((i, i + len(v)))
+    p1 = [m.span() for m in PKG_CAND.finditer(rt)]
+    if not p0 and not p1:
+        return ""
+    merged, total = [], 0
+    for a, b in p0 + p1:                                   # strongest hits first, stop when the budget is full
+        lo, hi = max(0, a - radius), min(len(rt), b + radius)
+        spans = sorted(merged + [(lo, hi)])
+        m2 = [list(spans[0])]
+        for x, y in spans[1:]:
+            if x <= m2[-1][1]: m2[-1][1] = max(m2[-1][1], y)
+            else: m2.append([x, y])
+        if sum(y - x for x, y in m2) > limit and merged:
+            break
+        merged = [tuple(x) for x in m2]
+    return " ... ".join(rt[x:y] for x, y in merged)[:limit]
+
+
+def fetch_article(url):
+    """Full text of an article (https only, size-capped). "" on any problem."""
+    try:
+        if not str(url).startswith("https://"):
+            return ""
+        return strip_html(B.http_get(url, timeout=40)[:600000])
+    except Exception:
+        return ""
+
+
+def mb_lookup(sha):
+    """Independent confirmation from abuse.ch MalwareBazaar (needs ABUSECH_AUTH_KEY).
+    -> family name if the hash is a known malware sample, None if unknown / unavailable."""
+    key = (os.environ.get("ABUSECH_AUTH_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        req = urllib.request.Request("https://mb-api.abuse.ch/api/v1/",
+                                     urllib.parse.urlencode({"query": "get_info", "hash": sha}).encode(), {"Auth-Key": key})
+        j = _post(req)
+        if j.get("query_status") == "ok" and j.get("data"):
+            return B.clean_name(j["data"][0].get("signature") or "", "Unknown")
+    except Exception:
+        pass
+    return None
+
+
+def process_items(items, meta, approved, proposed, ctx, llm, log=print, fetch=None, mb=None, deep_budget=DEEP_PER_RUN):
     stats = {"items": 0, "skipped": 0, "ai_errors": 0, "rejected": 0, "pending": 0, "accepted": 0, "rules": 0, "first_error": "",
-             "parse_fail": 0, "not_android": 0, "no_iocs": 0, "sample": ""}
-    streak = 0
+             "parse_fail": 0, "not_android": 0, "no_iocs": 0, "sample": "", "deep": 0, "mb_verified": 0}
+    st = {"streak": 0, "calls": 0}
     ts = iso(now())
     cutoff = iso(now() - timedelta(days=PENDING_DAYS))
-    meta.setdefault("processed", {}); meta.setdefault("pending", {}); meta.setdefault("approved_meta", {})
+    meta.setdefault("processed", {}); meta.setdefault("pending", {}); meta.setdefault("approved_meta", {}); meta.setdefault("deep", {})
     meta["pending"] = {k: v for k, v in meta["pending"].items() if v.get("first", ts) >= cutoff}
     toks = ", ".join(sorted(ctx.tokens)[:60])
     delay = _delay()
-    first_call = True
-    for it in items:
-        if it["id"] in meta["processed"]:
-            stats["skipped"] += 1; continue
-        stats["items"] += 1
-        if delay and not first_call:
+
+    def analyze(it):
+        """-> ("ok", dict) | ("skip", None) | ("stop", None)"""
+        if delay and st["calls"]:
             time.sleep(delay)
-        first_call = False
+        st["calls"] += 1
         try:
             raw_txt = llm(SYSTEM, "Allowed rule tokens: %s\n\n<report source=\"%s\">\n%s\n</report>" % (toks, it["src"], it["text"]))
         except Exception as ex:
-            stats["ai_errors"] += 1; streak += 1
+            stats["ai_errors"] += 1; st["streak"] += 1
             stats["first_error"] = stats["first_error"] or str(ex)[:300]
             log("  AI error (%s): %s" % (it["src"], str(ex)[:300]))
-            if streak >= 3:
+            if st["streak"] >= 3:
                 log("  3 AI failures in a row: stopping early (nothing is saved for these items)")
-                break
-            continue
+                return "stop", None
+            return "skip", None
         out = parse_json(raw_txt)
-        if not isinstance(out, dict):             # model did not return JSON: do NOT mark as processed, retry next run
-            stats["parse_fail"] += 1; streak += 1
+        if not isinstance(out, dict):             # not JSON: do NOT mark as processed, retry next run
+            stats["parse_fail"] += 1; st["streak"] += 1
             stats["sample"] = stats["sample"] or (raw_txt or "")[:300]
-            if streak >= 3:
+            if st["streak"] >= 3:
                 log("  3 unparseable AI answers in a row: stopping early")
-                break
-            continue
-        streak = 0
-        meta["processed"][it["id"]] = ts
-        if not out.get("android_related"):
-            stats["not_android"] += 1
-            continue
-        if not out.get("iocs") and not out.get("proposed_rules"):
-            stats["no_iocs"] += 1
-        for raw in (out.get("iocs") or [])[:60]:
+                return "stop", None
+            return "skip", None
+        st["streak"] = 0
+        return "ok", out
+
+    def handle(out, it):
+        """Validate + corroborate what the AI proposed. Returns how many IOCs the AI proposed."""
+        raws = (out.get("iocs") or [])[:60]
+        for raw in raws:
             if stats["accepted"] >= MAX_NEW_PER_RUN:
                 break
             v = validate_ioc(raw, it, ctx)
@@ -388,25 +445,59 @@ def process_items(items, meta, approved, proposed, ctx, llm, log=print):
             if h and h not in p["hosts"]:
                 p["hosts"].append(h)
             p["trusted"] = p["trusted"] or it["trusted"]
+            verified = mb(val) if (kind == "sha256" and mb is not None) else None   # independent database confirmation
             need_two = kind == "domain"
-            if len(p["hosts"]) >= 2 or (p["trusted"] and not need_two):
+            if verified is not None or len(p["hosts"]) >= 2 or (p["trusted"] and not need_two):
+                if verified:
+                    stats["mb_verified"] += 1
+                    if verified != "Unknown":
+                        p["family"] = "AI." + verified
                 approved[sec][val] = p["family"]
-                meta["approved_meta"][key] = {"first_seen": ts, "hosts": p["hosts"]}
+                meta["approved_meta"][key] = {"first_seen": ts, "hosts": p["hosts"], "verified": "malwarebazaar" if verified else ""}
                 del meta["pending"][key]
                 stats["accepted"] += 1
-                log("  + %s %s (%s) from %s" % (kind, val[:48], fam, ",".join(p["hosts"])))
+                log("  + %s %s (%s) from %s%s" % (kind, val[:48], p["family"], ",".join(p["hosts"]), " [MalwareBazaar]" if verified else ""))
             else:
                 stats["pending"] += 1
         for r in (out.get("proposed_rules") or [])[:5]:
             vr = validate_rule(r, ctx)
             if vr and all(x["id"] != vr["id"] for x in proposed):
                 vr["source"] = it["url"]; proposed.append(vr); stats["rules"] += 1
+        return len(raws)
+
+    for it in items:
+        if it["id"] in meta["processed"]:
+            stats["skipped"] += 1; continue
+        stats["items"] += 1
+        kind, out = analyze(it)
+        if kind == "stop":
+            break
+        if kind != "ok":
+            continue
+        meta["processed"][it["id"]] = ts
+        if not out.get("android_related"):
+            stats["not_android"] += 1
+            continue
+        if handle(out, it) == 0:
+            stats["no_iocs"] += 1
+            # Android story but the feed excerpt had no indicators: read the FULL article (once) and look again
+            if fetch and deep_budget > 0 and it.get("url") and it["id"] not in meta["deep"]:
+                deep_budget -= 1; meta["deep"][it["id"]] = ts; stats["deep"] += 1
+                cond = condense(fetch(it["url"]) or "")
+                if cond:
+                    it2 = dict(it, text=cond)
+                    k2, out2 = analyze(it2)
+                    if k2 == "stop":
+                        break
+                    if k2 == "ok" and out2.get("android_related"):
+                        handle(out2, it2)
     # expire old domains + bound state size
     exp = iso(now() - timedelta(days=DOMAIN_TTL_DAYS))
     for key, m in list(meta["approved_meta"].items()):
         if key.startswith("domain:") and m["first_seen"] < exp:
             approved.get("domains", {}).pop(key[7:], None); del meta["approved_meta"][key]
     meta["processed"] = dict(sorted(meta["processed"].items(), key=lambda kv: kv[1])[-600:])
+    meta["deep"] = dict(sorted(meta["deep"].items(), key=lambda kv: kv[1])[-300:])
     del proposed[:-MAX_PROPOSED_RULES]
     return stats
 
@@ -460,7 +551,9 @@ def main():
     items = [i for i in items if i["id"] not in done]
     items.sort(key=lambda i: not i["trusted"])                      # vendor research first
     items = items[:int(os.environ.get("AI_MAX_ITEMS") or 40)]       # cost cap per run
-    stats = process_items(items, meta, approved, proposed, ctx, call_llm)
+    stats = process_items(items, meta, approved, proposed, ctx, call_llm, fetch=fetch_article,
+                          mb=mb_lookup if (os.environ.get("ABUSECH_AUTH_KEY") or "").strip() else None,
+                          deep_budget=int(os.environ.get("AI_MAX_DEEP") or DEEP_PER_RUN))
     save(META, meta); save(APPROVED, approved); save(PROPOSED, proposed)
     line = "AI intel: %s | totals: %s" % (stats, {k: len(v) for k, v in approved.items()})
     print(line)
