@@ -116,4 +116,32 @@ st = A.process_items([item("t1", "securelist.com", True)], meta, {"hashes": {}},
 assert st["parse_fail"] == 0 and st["not_android"] == 1 and "t1" in meta["processed"], st
 r = A.selftest(lambda s, u: '{"android_related": true, "iocs')
 assert not r["json_ok"] and r["tries"] == 2 and r["len"] > 0
+
+# 11) OpenRouter: reasoning / empty-answer models are skipped, a working free model is used
+import os, threading, http.server
+class OR(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        out = json.dumps({"data": [
+            {"id": "nvidia/nemotron-x:free", "context_length": 128000, "supported_parameters": ["reasoning"], "architecture": {"modality": "text->text"}},
+            {"id": "meta-llama/llama-3.3-70b-instruct:free", "context_length": 65000, "supported_parameters": ["tools"], "architecture": {"modality": "text->text"}},
+            {"id": "tiny/model-1b:free", "context_length": 8000, "supported_parameters": [], "architecture": {"modality": "text->text"}},
+            {"id": "paid/model", "context_length": 128000, "supported_parameters": [], "architecture": {"modality": "text->text"}}]}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(out)
+    def do_POST(self):
+        b = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        content = "" if b["model"].startswith("meta-llama") and OR.fail_first else '{"android_related": false}'
+        OR.fail_first = False
+        out = json.dumps({"model": b["model"], "choices": [{"message": {"content": content}, "finish_reason": "stop"}]}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(out)
+OR.fail_first = False
+srv = http.server.HTTPServer(("127.0.0.1", 0), OR); threading.Thread(target=srv.serve_forever, daemon=True).start()
+os.environ.update(AI_API_KEY="K", AI_BASE_URL="http://127.0.0.1:%d/openrouter.ai/api/v1" % srv.server_port); os.environ.pop("AI_MODEL", None); os.environ.pop("ANTHROPIC_API_KEY", None)
+A._MODEL_CACHE.clear(); A._OR_BAD.clear(); A.MODELS_SEEN.clear()
+assert A.call_llm("s", "u") == '{"android_related": false}' and A.MODELS_SEEN == ["meta-llama/llama-3.3-70b-instruct:free"], A.MODELS_SEEN
+assert A._MODEL_CACHE["or_list"] == ["meta-llama/llama-3.3-70b-instruct:free"]       # reasoning, tiny-context and paid models filtered out
+# the only candidate answers empty once -> it is skipped, falls back to openrouter/free which works
+A._MODEL_CACHE.clear(); A._OR_BAD.clear(); A.MODELS_SEEN.clear(); OR.fail_first = True
+assert A.call_llm("s", "u") == '{"android_related": false}' and "openrouter/free" in A.MODELS_SEEN and A._OR_BAD
+print("openrouter model selection OK")
 print("ALL VALIDATOR TESTS PASSED")

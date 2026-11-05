@@ -204,6 +204,81 @@ def have_ai():
     return bool((e("ANTHROPIC_API_KEY") or "").strip() or ((e("AI_API_KEY") or "").strip() and (e("AI_BASE_URL") or "").strip()))
 
 
+def _chat(base, key, model, system, user, retries=3):
+    """One OpenAI-compatible chat completion. Free tiers rate-limit: wait and retry on 429 (except the daily limit)."""
+    body = {"model": model, "temperature": 0, "max_tokens": 4000,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(),
+                                 {"content-type": "application/json", "authorization": "Bearer " + key})
+    for attempt in range(retries + 1):
+        try:
+            data = _post(req)
+            used = str(data.get("model") or model)
+            if used and used not in MODELS_SEEN:
+                MODELS_SEEN.append(used)
+            ch = data["choices"][0]
+            if ch.get("finish_reason") == "length":
+                print("  warning: answer cut off by the token limit (model %s)" % used)
+            return ch["message"].get("content") or ""
+        except RuntimeError as ex:
+            if str(ex).startswith("HTTP 429") and attempt < retries and "day" not in str(ex).lower():
+                time.sleep((20, 40, 70)[min(attempt, 2)]); continue
+            raise
+
+
+_OR_BAD = set()
+
+
+def _openrouter_candidates(base, key):
+    """Free, NON-reasoning text models (reasoning models often return an empty answer), best families first."""
+    if "or_list" not in _MODEL_CACHE:
+        cands = []
+        try:
+            data = _post(urllib.request.Request(base + "/models", headers={"authorization": "Bearer " + key}))
+            for m in data.get("data", []):
+                mid = str(m.get("id", ""))
+                low = mid.lower()
+                sp = m.get("supported_parameters") or []
+                if not mid.endswith(":free") or "reasoning" in sp or "include_reasoning" in sp:
+                    continue
+                if not str((m.get("architecture") or {}).get("modality", "text->text")).startswith("text"):
+                    continue
+                if any(x in low for x in ("guard", "embed", "vision", "audio", "image", "coder", "code", "safety", "thinking")):
+                    continue
+                ctx = int(m.get("context_length") or 0)
+                if ctx < 32000:
+                    continue
+                pref = next((i for i, f in enumerate(("llama-3.3", "qwen", "mistral", "gemma", "llama", "deepseek")) if f in low), 99)
+                cands.append((pref, -ctx, mid))
+        except Exception as ex:
+            print("  model list unavailable (%s): falling back to openrouter/free" % str(ex)[:120])
+        cands.sort()
+        _MODEL_CACHE["or_list"] = [c[2] for c in cands]
+        print("openrouter candidates:", _MODEL_CACHE["or_list"][:6])
+    return _MODEL_CACHE["or_list"]
+
+
+def _openrouter_chat(base, key, system, user):
+    """Try free models in order; a model that returns an empty answer or errors is skipped for the rest of the run."""
+    cands = [c for c in _openrouter_candidates(base, key) if c not in _OR_BAD][:4]
+    if "openrouter/free" not in _OR_BAD:
+        cands.append("openrouter/free")                    # last resort: OpenRouter picks a free model itself
+    last = None
+    for mid in cands:
+        try:
+            txt = _chat(base, key, mid, system, user, retries=1)
+        except RuntimeError as ex:
+            if "per-day" in str(ex) or "per_day" in str(ex):     # global daily limit: nothing else will work
+                raise
+            last = ex; _OR_BAD.add(mid); print("  model %s failed: %s" % (mid, str(ex)[:120])); continue
+        if txt.strip():
+            return txt
+        _OR_BAD.add(mid); print("  model %s returned an empty answer: skipping it" % mid)
+    if last:
+        raise last
+    return ""
+
+
 def call_llm(system, user):
     """Provider is chosen by which secrets exist:
        1) ANTHROPIC_API_KEY                      -> Anthropic Messages API (model: AI_MODEL, default claude-haiku-5-5)
@@ -221,26 +296,8 @@ def call_llm(system, user):
     key, base = (e("AI_API_KEY") or "").strip(), (e("AI_BASE_URL") or "").strip().rstrip("/")
     if key and base:
         if not model and "openrouter.ai" in base:
-            model = "openrouter/free"          # OpenRouter's free-models router; or set AI_MODEL to a ":free" model id
-        model = model or _discover_model(base, key)
-        body = {"model": model, "temperature": 0, "max_tokens": 4000,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-        req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(),
-                                     {"content-type": "application/json", "authorization": "Bearer " + key})
-        for attempt in range(4):                      # free tiers rate-limit: wait and retry on 429
-            try:
-                data = _post(req)
-                used = str(data.get("model") or "")
-                if used and used not in MODELS_SEEN:
-                    MODELS_SEEN.append(used)
-                ch = data["choices"][0]
-                if ch.get("finish_reason") == "length":
-                    print("  warning: answer cut off by the token limit (model %s)" % used)
-                return ch["message"].get("content") or ""
-            except RuntimeError as ex:
-                if str(ex).startswith("HTTP 429") and attempt < 3 and "day" not in str(ex).lower():
-                    time.sleep((20, 40, 70)[attempt]); continue
-                raise
+            return _openrouter_chat(base, key, system, user)
+        return _chat(base, key, model or _discover_model(base, key), system, user, retries=3)
     raise RuntimeError("no AI key configured: add repo secret ANTHROPIC_API_KEY, or AI_API_KEY + variables AI_BASE_URL and AI_MODEL")
 
 
