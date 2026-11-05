@@ -1,13 +1,22 @@
 {
  "approved_meta": {},
+ "deep": {
+  "https://www.bleepingcomputer.com/news/security/ghostmap-android-flaw-lets-malicious-app-trigger-persistent-boot-loop/": "2026-11-05T10:26:39Z"
+ },
  "pending": {},
  "processed": {
+  "https://cyble.com/?p=126300": "2026-11-05T10:26:39Z",
+  "https://kasperskycontenthub.com/securelist/?p=121467": "2026-11-05T10:26:39Z",
   "https://kasperskycontenthub.com/securelist/?post_type=threat_response&p=121715": "2026-11-04T08:58:55Z",
   "https://kasperskycontenthub.com/securelist/?post_type=threat_response&p=121794": "2026-11-04T08:58:55Z",
+  "https://research.checkpoint.com/?p=33658": "2026-11-05T10:26:39Z",
+  "https://research.checkpoint.com/?p=33672": "2026-11-05T10:26:39Z",
+  "https://thehackernews.com/2026/11/apple-to-start-scanning-publicly-shared.html": "2026-11-05T10:26:39Z",
   "https://thehackernews.com/2026/11/apt29-linked-hackers-hijack-web.html": "2026-11-05T07:15:29Z",
   "https://thehackernews.com/2026/11/attackers-exploit-critical-siemens.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/attackers-pose-as-it-support-on.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/attackers-target-unpatched.html": "2026-11-04T08:58:55Z",
+  "https://thehackernews.com/2026/11/backdoored-docker-image-for-artex-ai.html": "2026-11-05T10:26:39Z",
   "https://thehackernews.com/2026/11/barracuda-flaws-could-be-chained-to.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/binance-reveals-how-fake-job-interviews.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/chainstack-reports-production-systems.html": "2026-11-04T08:58:55Z",
@@ -41,6 +50,7 @@
   "https://thehackernews.com/2026/11/the-4-elements-of-exposure.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/weekly-recap-critical-cves-linux-ddos.html": "2026-11-04T08:58:55Z",
   "https://thehackernews.com/2026/11/xen-hypervisor-flaws-let-one-malicious.html": "2026-11-05T07:15:29Z",
+  "https://thehackernews.com/2026/11/zyxel-gs1900-patch-fails-to-block-zero.html": "2026-11-05T10:26:39Z",
   "https://www.bleepingcomputer.com/news/google/google-adds-new-250-000-cloud-vrp-reward-for-root-in-cloud-bugs/": "2026-11-04T08:58:55Z",
   "https://www.bleepingcomputer.com/news/security/barracuda-warns-of-critical-flaws-allowing-root-access-to-devices/": "2026-11-04T08:58:55Z",
   "https://www.bleepingcomputer.com/news/security/binance-says-fake-job-interview-led-to-63-billion-crypto-heist/": "2026-11-04T08:58:55Z",
@@ -51,6 +61,7 @@
   "https://www.bleepingcomputer.com/news/security/dreamhost-confirms-data-breach-exposed-ftp-logins-and-webmail-sessions/": "2026-11-05T07:15:29Z",
   "https://www.bleepingcomputer.com/news/security/fintech-platform-sageworks-taken-offline-after-suspected-cyberattack/": "2026-11-04T08:58:55Z",
   "https://www.bleepingcomputer.com/news/security/gartner-predicts-socs-will-have-50-percent-more-engineers-than-analysts-by-2028/": "2026-11-04T08:58:55Z",
+  "https://www.bleepingcomputer.com/news/security/ghostmap-android-flaw-lets-malicious-app-trigger-persistent-boot-loop/": "2026-11-05T10:26:39Z",
   "https://www.bleepingcomputer.com/news/security/google-calendar-phishing-campaign-hijacks-sessions-bypasses-mfa/": "2026-11-04T16:07:22Z",
   "https://www.bleepingcomputer.com/news/security/google-disrupts-million-device-xcpe-android-malware-botnet-bans-tv-box-maker/": "2026-11-04T08:58:55Z",
   "https://www.bleepingcomputer.com/news/security/google-llmjacking-attacks-rack-up-1-million-in-cloud-ai-charges/": "2026-11-04T08:58:55Z",
