@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 45,
-  "generated": "2026-11-05T23:50:18Z",
+  "version": 46,
+  "generated": "2026-11-06T06:44:14Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "0789eb1ba2a7be4f9c3f5accc63a5291a794874f4d2ccaecf2cd32eb571d7446",
-      "size": 450575
+      "sha256": "97f46088b8e6093fddd97e243d9419c54ad6d4148a8dd9ac040716f3824cfe45",
+      "size": 451155
     }
   ],
   "counts": {
-    "hashes": 3312,
+    "hashes": 3313,
     "packages": 615,
     "certs": 473,
-    "domains": 1810,
+    "domains": 1824,
     "entry_names": 7,
     "patterns": 0,
     "rules": 9
@@ -23,8 +23,8 @@
     {
       "name": "MalwareBazaar",
       "status": "ok",
-      "count": 4,
-      "new": 0
+      "count": 5,
+      "new": 1
     },
     {
       "name": "stalkerware-indicators",
@@ -34,8 +34,8 @@
     {
       "name": "ThreatFox",
       "status": "ok",
-      "count": 492,
-      "history": 961
+      "count": 493,
+      "history": 969
     },
     {
       "name": "ai-intel",
