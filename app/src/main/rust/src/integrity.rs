@@ -32,8 +32,11 @@ fn prop(_name: &str) -> String {
 const SU_PATHS: &[&str] = &[
     "/system/bin/su", "/system/xbin/su", "/sbin/su", "/system/sbin/su", "/vendor/bin/su",
     "/su/bin/su", "/data/local/xbin/su", "/data/local/bin/su", "/data/local/su", "/system/app/Superuser.apk",
+    "/system/xbin/daemonsu", "/system/bin/.ext/.su", "/system/usr/we-need-root/su-backup", "/system/bin/failsafe/su",
 ];
-const MAGISK_PATHS: &[&str] = &["/sbin/.magisk", "/data/adb/magisk", "/data/adb/ksu", "/system/bin/magisk", "/debug_ramdisk/.magisk"];
+const MAGISK_PATHS: &[&str] = &[
+    "/sbin/.magisk", "/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap", "/data/adb/modules", "/system/bin/magisk", "/debug_ramdisk/.magisk",
+];
 const HOOK_NAMES: &[&str] = &["frida", "xposed", "lsposed", "zygisk", "substrate", "riru"];
 
 pub fn probe() -> Vec<String> {
@@ -78,6 +81,31 @@ pub fn probe() -> Vec<String> {
     if let Ok(mi) = std::fs::read_to_string("/proc/self/mountinfo") {
         if mi.to_lowercase().contains("magisk") {
             out.push("M|MAGISK_MOUNT|".into());
+        }
+    }
+    // a debugger / tracer attached to this process (ptrace): TracerPid is 0 when nothing is attached
+    if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(l) = st.lines().find(|l| l.starts_with("TracerPid:")) {
+            let pid = l.trim_start_matches("TracerPid:").trim();
+            if !pid.is_empty() && pid != "0" {
+                out.push(format!("M|TRACED|{}", pid));
+            }
+        }
+    }
+    // the system partitions are read-only on a stock device
+    if let Ok(mt) = std::fs::read_to_string("/proc/self/mounts") {
+        for l in mt.lines() {
+            let mut it = l.split_whitespace();
+            let _dev = it.next();
+            let mp = it.next();
+            let _fs = it.next();
+            let opts = it.next();
+            if let (Some(mp), Some(opts)) = (mp, opts) {
+                if (mp == "/system" || mp == "/vendor" || mp == "/product") && opts.split(',').any(|o| o == "rw") {
+                    out.push(format!("M|SYSTEM_RW|{}", mp));
+                    break;
+                }
+            }
         }
     }
     out

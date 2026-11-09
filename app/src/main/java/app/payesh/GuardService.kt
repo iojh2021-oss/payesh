@@ -55,7 +55,7 @@ class GuardService : Service() {
     private var work: ExecutorService? = null
     private var recv: BroadcastReceiver? = null
     private var watcher: DownloadWatcher? = null
-    private val recentKeys = ConcurrentHashMap<String, Long>()   // normalized path -> last time handled
+    private val recentKeys = ConcurrentHashMap<String, LongArray>() // normalized path -> [last time handled, file signature]
     private var mediaObs: ContentObserver? = null
     @Volatile private var mediaPending = false
     @Volatile private var mediaSince = 0L                         // MediaStore DATE_ADDED (seconds) already processed
@@ -105,7 +105,7 @@ class GuardService : Service() {
         synchronized(this) {
             val c = envCache
             if (c != null && now - envAt < 60_000) return c
-            val e = AvEnv(this)
+            val e = AvEnv(this).also { it.live = true }
             envCache = e
             envAt = now
             return e
@@ -114,6 +114,7 @@ class GuardService : Service() {
 
     private fun begin() {
         lastPoll = System.currentTimeMillis()
+        mediaSince = lastPoll / 1000 - 5
         AvGuardState.running.value = true
         AvGuardState.events.value = 0
         work = Executors.newFixedThreadPool(2)
@@ -166,7 +167,10 @@ class GuardService : Service() {
         tick++
         checkInstaller()
         if (tick % 7 == 0) { pollFiles(); work?.execute { mediaScan() } }
-        if (tick % 5 == 0 && (watcher?.count() ?: 0) == 0 && Dedup.hasAccess(this)) startWatcher()
+        if (tick % 5 == 0 && Dedup.hasAccess(this)) {
+            if ((watcher?.count() ?: 0) == 0 || watcher?.healthy() == false) startWatcher()
+            if (mediaObs == null) startMediaObserver()
+        }
         if (tick == 5) integrityCheck()
         if (tick % 100 == 0) {
             behaviorCheck()
@@ -226,7 +230,8 @@ class GuardService : Service() {
                 AvNotify.post(
                     this, pkg.hashCode(),
                     if (f.level == 2) "⚠ برنامهٔ خطرناک $what" else "برنامهٔ مشکوک $what",
-                    "$label (ریسک ${f.score})\n$src\n" + f.reasons.take(4).joinToString("\n") { "• $it" }, true
+                    "$label (ریسک ${f.score})\n$src\n" + f.reasons.take(4).joinToString("\n") { "• $it" }, true,
+                    listOf(AvGuard.uninstallAction(this, pkg))
                 )
             } else if (!fromPlay) {
                 AvNotify.post(
@@ -250,9 +255,15 @@ class GuardService : Service() {
         if (ext in TEMP_EXT) return
         val now = System.currentTimeMillis()
         val key = keyOf(f)
+        val sig = sigOf(f)
         val last = recentKeys[key]
-        if (last != null && now - last < 45_000) return
-        recentKeys[key] = now
+        if (last != null) {
+            val age = now - last[0]
+            // the same file is reported by several sources (inotify, MediaStore, poll): handle it once;
+            // a file that CHANGED (new size / time) is checked again after a short pause
+            if (age < 15_000 || (last[1] == sig && age < 600_000)) return
+        }
+        recentKeys[key] = longArrayOf(now, sig)
         if (recentKeys.size > 2000) recentKeys.clear()
         AvGuardState.events.value = AvGuardState.events.value + 1
         if (ext in APK_EXT) Plog.w("guard: new file ${f.name}")
@@ -260,6 +271,8 @@ class GuardService : Service() {
     }
 
     private val pendingRe = Regex("^\\.pending-\\d+-")
+
+    private fun sigOf(f: File): Long = f.lastModified() * 31 + f.length()
 
     private fun handleFile(f0: File, ext0: String) {
         try {
@@ -269,7 +282,8 @@ class GuardService : Service() {
                 val clean = File(f0.parentFile, f0.name.replace(pendingRe, ""))
                 var tries = 0
                 while (tries < 10 && !clean.isFile) { Thread.sleep(2_000); tries++ }
-                if (clean.isFile) f = clean else { recentKeys.remove(keyOf(f0)); return }
+                if (clean.isFile) { f = clean; recentKeys[keyOf(f0)] = longArrayOf(System.currentTimeMillis(), sigOf(clean)) }
+                else { recentKeys.remove(keyOf(f0)); return }
             }
             val ext = f.name.substringAfterLast('.', "").lowercase()
             if (!f.isFile || f.length() < 64) return
@@ -331,7 +345,6 @@ class GuardService : Service() {
      */
     private fun startMediaObserver() {
         if (!Dedup.hasAccess(this)) return
-        mediaSince = System.currentTimeMillis() / 1000 - 5
         val o = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
                 if (mediaPending) return
@@ -350,37 +363,53 @@ class GuardService : Service() {
         }
     }
 
+    private val mediaLock = Any()
+
+    /**
+     * Reads files added since the last cursor, oldest first and page by page, so a burst of more than one page
+     * (for example an extracted archive) is never skipped.
+     */
     private fun mediaScan() {
         if (!Dedup.hasAccess(this)) return
-        val since = mediaSince - 2
-        var maxAdded = mediaSince
-        try {
-            val cols = arrayOf(MediaStore.Files.FileColumns.DATA, MediaStore.Files.FileColumns.DATE_ADDED, MediaStore.Files.FileColumns.MIME_TYPE)
-            // Bundle form: newer Android versions reject a "LIMIT" hidden inside the sort-order string
-            val q = android.os.Bundle().apply {
-                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, MediaStore.Files.FileColumns.DATE_ADDED + " >= ?")
-                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(since.toString()))
-                putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, MediaStore.Files.FileColumns.DATE_ADDED + " DESC")
-                putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 100)
-            }
-            contentResolver.query(MediaStore.Files.getContentUri("external"), cols, q, null)?.use { c ->
-                while (c.moveToNext()) {
-                    val path = c.getString(0) ?: continue
-                    val added = c.getLong(1)
-                    val mime = c.getString(2) ?: ""
-                    if (added > maxAdded) maxAdded = added
-                    if (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) continue
-                    if (path.contains("/Android/data/") || path.contains("/Android/obb/")) continue
-                    val f = File(path)
-                    if (!f.isFile) continue
-                    AvGuardState.mediaEvents.value = AvGuardState.mediaEvents.value + 1
-                    onNewFile(f)
+        synchronized(mediaLock) {
+            try {
+                val cols = arrayOf(MediaStore.Files.FileColumns.DATA, MediaStore.Files.FileColumns.DATE_ADDED, MediaStore.Files.FileColumns.MIME_TYPE)
+                var rounds = 0
+                while (rounds < 5 && sched != null) {
+                    rounds++
+                    val since = mediaSince - 2
+                    var maxAdded = mediaSince
+                    var n = 0
+                    // Bundle form: newer Android versions reject a "LIMIT" hidden inside the sort-order string
+                    val q = android.os.Bundle().apply {
+                        putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, MediaStore.Files.FileColumns.DATE_ADDED + " >= ?")
+                        putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(since.toString()))
+                        putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, MediaStore.Files.FileColumns.DATE_ADDED + " ASC")
+                        putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 200)
+                    }
+                    contentResolver.query(MediaStore.Files.getContentUri("external"), cols, q, null)?.use { c ->
+                        while (c.moveToNext()) {
+                            n++
+                            val path = c.getString(0) ?: continue
+                            val added = c.getLong(1)
+                            val mime = c.getString(2) ?: ""
+                            if (added > maxAdded) maxAdded = added
+                            if (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) continue
+                            if (path.contains("/Android/data/") || path.contains("/Android/obb/")) continue
+                            val f = File(path)
+                            if (!f.isFile) continue
+                            AvGuardState.mediaEvents.value = AvGuardState.mediaEvents.value + 1
+                            onNewFile(f)
+                        }
+                    }
+                    val advanced = maxAdded > mediaSince
+                    mediaSince = maxAdded
+                    if (n < 200 || !advanced) break
                 }
+            } catch (e: Exception) {
+                Plog.w("media scan failed: $e")
             }
-        } catch (e: Exception) {
-            Plog.w("media scan failed: $e")
         }
-        mediaSince = maxAdded
     }
 
     // ------------------------------------------------------------------ installer screen
@@ -395,7 +424,7 @@ class GuardService : Service() {
         var hit = false
         while (ev.hasNextEvent()) {
             ev.getNextEvent(e)
-            if (e.eventType == UsageEvents.Event.ACTIVITY_RESUMED && e.packageName in INSTALLERS) hit = true
+            if (e.eventType == UsageEvents.Event.ACTIVITY_RESUMED && (e.packageName in INSTALLERS || e.packageName.contains("packageinstaller"))) hit = true
         }
         if (hit && now - lastInstallerAlert > 20_000) {
             lastInstallerAlert = now
@@ -437,6 +466,8 @@ class GuardService : Service() {
         "BOOTLOADER_UNLOCKED" -> "بوت‌لودر قفل‌نشده است؛ تغییر سیستم/کرنل ممکن است"
         "SELINUX_PERMISSIVE" -> "SELinux در حالت Permissive است؛ لایهٔ امنیتی اصلی غیرفعال است"
         "HOOK_LIBRARY" -> "کتابخانهٔ هوک/تزریق ($detail) داخل پردازش‌ها دیده شد"
+        "TRACED" -> "یک ردیاب/دیباگر (ptrace، PID $detail) به پردازش پایش وصل شده است"
+        "SYSTEM_RW" -> "پارتیشن سیستم ($detail) با دسترسی نوشتن (rw) مونت شده؛ سیستم ممکن است دستکاری شده باشد"
         else -> null
     }
 
@@ -516,7 +547,8 @@ class GuardService : Service() {
                         if (f.level == 2) {
                             AvNotify.post(
                                 this, pkg.hashCode(), "⚠ برنامهٔ خطرناک در بررسی دوره‌ای",
-                                "$label (ریسک ${f.score})\n" + f.reasons.take(4).joinToString("\n") { "• $it" }, true
+                                "$label (ریسک ${f.score})\n" + f.reasons.take(4).joinToString("\n") { "• $it" }, true,
+                                listOf(AvGuard.uninstallAction(this, pkg))
                             )
                         } else suspicious.add(label)
                     }

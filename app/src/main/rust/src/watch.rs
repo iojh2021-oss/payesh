@@ -97,8 +97,10 @@ impl Watch {
                 continue;
             }
             if mask & IN_IGNORED != 0 {
-                if let Ok(mut m) = self.map.lock() {
-                    m.remove(&wd);
+                // the folder was deleted / unmounted: tell the caller so it can watch it again when it comes back
+                let removed = self.map.lock().ok().and_then(|mut m| m.remove(&wd));
+                if let Some(d) = removed {
+                    out.push(format!("{}|{}", IN_IGNORED, d));
                 }
                 continue;
             }

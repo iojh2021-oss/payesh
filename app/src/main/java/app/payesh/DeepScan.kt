@@ -288,8 +288,22 @@ object Deep {
     private fun head2(f: File): String = try { f.inputStream().use { val b = ByteArray(2); if (it.read(b) == 2) String(b, Charsets.ISO_8859_1) else "" } } catch (_: Exception) { "" }
 
     /** An APK glued to the end of an image / PDF / media file: its zip directory (with the file names) sits at the very end. */
+    /** Cheap pre-check: a ZIP always ends with an "end of central directory" record (PK 05 06) within its last 64 KB. */
+    private fun hasEocd(r: RandomAccessFile): Boolean {
+        val n = minOf(r.length(), 65_557L).toInt()
+        if (n < 22) return false
+        val b = ByteArray(n)
+        r.seek(r.length() - n)
+        r.readFully(b)
+        for (i in n - 22 downTo 0) {
+            if (b[i] == 0x50.toByte() && b[i + 1] == 0x4B.toByte() && b[i + 2] == 5.toByte() && b[i + 3] == 6.toByte()) return true
+        }
+        return false
+    }
+
     private fun tailHasApk(f: File): Boolean = try {
         RandomAccessFile(f, "r").use { r ->
+            if (!hasEocd(r)) return@use false
             val n = minOf(r.length(), 3_000_000L).toInt()
             val buf = ByteArray(n)
             r.seek(r.length() - n)
@@ -325,16 +339,16 @@ object Deep {
     }
 
     /** Extra checks for ordinary files (called only in deep mode). */
-    fun fileNotes(env: AvEnv, f: File, ext: String, len: Long): List<Pair<Int, String>> {
+    fun fileNotes(env: AvEnv, f: File, ext: String, len: Long, live: Boolean = false): List<Pair<Int, String>> {
         val out = ArrayList<Pair<Int, String>>()
         try {
-            if (len in 16..262_144 && (ext in SCRIPT_EXT || (ext.isEmpty() && head2(f) == "#!"))) {
+            if (!live && len in 16..262_144 && (ext in SCRIPT_EXT || (ext.isEmpty() && head2(f) == "#!"))) {
                 val t = f.readText(Charsets.ISO_8859_1).lowercase()
                 for ((p, w, why) in SCRIPT_PATTERNS) if (t.contains(p)) out.add(w to "اسکریپت مشکوک: $why")
                 if (t.contains("| sh") && (t.contains("curl ") || t.contains("wget "))) out.add(35 to "اسکریپت: دانلود و اجرای مستقیم (curl/wget ... | sh)")
             }
             if (ext in CARRIER_EXT && len in 2048..80_000_000L && tailHasApk(f)) out.add(55 to "APK پنهان در انتهای فایل «$ext» (Polyglot)")
-            if (ext in ARCHIVE_EXT && len in 1000..400_000_000L) out.addAll(nested(env, f))
+            if (!live && ext in ARCHIVE_EXT && len in 1000..400_000_000L) out.addAll(nested(env, f))
         } catch (_: Exception) {}
         return out
     }

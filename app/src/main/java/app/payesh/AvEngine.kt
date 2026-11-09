@@ -48,6 +48,7 @@ class AvEnv(val ctx: Context) {
     val db: AvDb = AvDbStore.load(ctx)
     val sigs: Map<String, String> = AvPrefs.signatures(ctx) + db.hashes
     @Volatile var deep = false // deep scan mode: also analyze code, native libraries, manifest, archives and scripts
+    @Volatile var live = false // real-time guard: adds the cheap per-file checks (e.g. an APK hidden inside a media file)
 
     private fun enabledPkgs(key: String): Set<String> {
         val raw = try { Settings.Secure.getString(ctx.contentResolver, key) } catch (_: Exception) { null } ?: ""
@@ -135,6 +136,7 @@ object Av {
     private val classesRe = Regex("classes\\d*\\.dex")
     private val dblExt = Regex("""\.(jpe?g|png|gif|pdf|mp4|mp3|docx?|xlsx?|txt)\.(apk|exe|scr|bat|js|vbs|jar|sh)$""", RegexOption.IGNORE_CASE)
     private val zipLike = setOf("apk", "zip", "jar", "xapk", "apks", "apkm", "docx", "xlsx", "pptx", "odt", "ods", "epub", "aar", "kmz")
+    private val bundleExt = setOf("xapk", "apks", "apkm")
 
     fun level(score: Int) = if (score >= 70) 2 else if (score >= 35) 1 else 0
 
@@ -402,6 +404,58 @@ object Av {
         }
     } catch (_: Exception) { null }
 
+    /** Copies at most [limit] bytes; false when the stream is bigger (zip-bomb guard). */
+    private fun copyLimited(ins: java.io.InputStream, out: java.io.OutputStream, limit: Long): Boolean {
+        val b = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val r = ins.read(b)
+            if (r < 0) return true
+            total += r
+            if (total > limit) return false
+            out.write(b, 0, r)
+        }
+    }
+
+    /**
+     * XAPK / APKS / APKM are ZIP bundles of one or more APKs. Each inner APK is unpacked to the cache, analyzed with the
+     * full APK engine (signatures, C2 domains, payloads, rules) and deleted again; the worst result represents the bundle.
+     */
+    private fun analyzeBundle(env: AvEnv, f: File): Finding? {
+        var best: Finding? = null
+        var bestName = ""
+        try {
+            val dir = File(env.ctx.cacheDir, "bundle-scan").also { it.mkdirs() }
+            ZipFile(f).use { z ->
+                var done = 0
+                val e = z.entries()
+                while (e.hasMoreElements() && done < 10) {
+                    val en = e.nextElement()
+                    if (en.isDirectory || !en.name.endsWith(".apk", true) || en.size > 400_000_000L || en.size < 1000) continue
+                    done++
+                    val tmp = File(dir, "b${System.nanoTime()}.apk")
+                    try {
+                        val ok = z.getInputStream(en).use { ins -> tmp.outputStream().use { out -> copyLimited(ins, out, 400_000_000L) } }
+                        if (!ok) continue
+                        val pi = env.pm.getPackageArchiveInfo(tmp.path, FLAGS or (if (env.deep) Deep.FLAGS_EXTRA else 0)) ?: continue
+                        pi.applicationInfo?.let { it.sourceDir = tmp.path; it.publicSourceDir = tmp.path }
+                        val label = try { pi.applicationInfo?.loadLabel(env.pm)?.toString() } catch (_: Exception) { null } ?: pi.packageName
+                        val fa = analyze(env, pi, label, false, true)
+                        if (best == null || fa.score > best!!.score) { best = fa.copy(title = "$label (بستهٔ ${f.extension.uppercase()})"); bestName = en.name.substringAfterLast('/') }
+                    } catch (ex: Exception) {
+                        Plog.w("bundle entry failed: ${en.name}: $ex")
+                    } finally {
+                        tmp.delete()
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            return null
+        }
+        val b = best ?: return null
+        return if (bestName.isNotEmpty()) b.copy(reasons = b.reasons.map { "[$bestName] $it" }) else b
+    }
+
     /** File-level checks: EICAR, disguised executables, double extensions, APK files, ELF/DEX, signature hashes. */
     fun analyzeFile(env: AvEnv, f: File): Finding? {
         val name = f.name
@@ -436,7 +490,11 @@ object Av {
         if (dex) add(30, "فایل DEX مستقل (کد اجرایی اندروید)")
         if (mz && (ext == "exe" || ext == "scr" || ext == "dll")) add(20, "فایل اجرایی ویندوز روی گوشی")
 
-        if (env.deep) for ((n, r) in Deep.fileNotes(env, f, ext, len)) add(n, r)
+        if (env.deep) {
+            for ((n, r) in Deep.fileNotes(env, f, ext, len)) add(n, r)
+        } else if (env.live) {
+            for ((n, r) in Deep.fileNotes(env, f, ext, len, true)) add(n, r)
+        }
 
         var title = name
         var kind = 1
@@ -455,6 +513,15 @@ object Av {
                 title = "$label (APK دانلودی)"
                 kind = 2
             } else add(20, "فایل APK خراب یا نامعتبر")
+        } else if (ext in bundleExt && pk && !env.deep) { // deep mode already unpacks archives itself
+            val bf = analyzeBundle(env, f)
+            if (bf != null) {
+                apkScore = bf.score
+                extraReasons = bf.reasons
+                sha = bf.sha
+                title = bf.title
+                kind = 2
+            }
         }
         if (sha == null && (elf || dex || mz || ext == "apk" || (pk && ext !in zipLike && score >= 70))) sha = sha256(f)
         val sig = sha?.let { env.sigs[it] }

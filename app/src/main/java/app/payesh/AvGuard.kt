@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.FileObserver
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
@@ -34,12 +35,17 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
     private val observers = HashMap<String, FileObserver>()
     private val nativeDirs = HashMap<String, Int>() // native mode: dir path -> remaining depth
     private val recent = HashMap<String, Long>()
-    private val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.CREATE
-    private var nh = 0L
+    private val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.CREATE or
+        FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
+    @Volatile private var nh = 0L
     private var th: Thread? = null
     @Volatile private var running = false
+    @Volatile private var broken = false // the native reader thread ended without being asked to
 
     fun count(): Int = synchronized(this) { if (nh != 0L) nativeDirs.size else observers.size }
+
+    /** False when the native reader thread died on its own; the next start() / the guard loop rebuilds the watcher. */
+    fun healthy(): Boolean = synchronized(this) { nh == 0L || (!broken && th?.isAlive == true) }
 
     /** How many folders we may watch: half of the system inotify limit (read at runtime), within sane bounds. */
     private val budget: Int by lazy {
@@ -55,6 +61,7 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
 
     @Synchronized
     fun start(roots: List<File>) {
+        if (nh != 0L && !healthy()) { Plog.w("guard: native watcher died, rebuilding"); stop() }
         if (nh == 0L && observers.isEmpty() && NativeEngine.ok) startNative()
         // pass 1: priority folders first, so they can never be starved by the budget
         for (r in roots) for (d in Av.SMART_DIRS) addTree(File(r, d), 5)
@@ -72,7 +79,7 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
         var t: Thread? = null
         synchronized(this) {
             h = nh; t = th
-            nh = 0L; th = null; running = false
+            nh = 0L; th = null; running = false; broken = false
             observers.values.forEach { it.stopWatching() }
             observers.clear()
             nativeDirs.clear()
@@ -92,6 +99,7 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
         val h = try { NativeEngine.watchCreate() } catch (_: Throwable) { 0L }
         if (h == 0L) return
         nh = h
+        broken = false
         running = true
         th = Thread({ nativeLoop(h) }, "guard-inotify").also { it.isDaemon = true; it.start() }
         Plog.w("guard: native inotify watcher active")
@@ -106,6 +114,18 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
         } catch (e: Throwable) {
             Plog.w("native watch loop failed: $e")
         }
+        if (running && nh == h) { broken = true; Plog.w("guard: native watcher stopped unexpectedly") }
+    }
+
+    /** Files that already exist in a brand-new folder were created before its watch existed (e.g. an extracted archive). */
+    private fun scanFresh(dir: File) {
+        val list = try { dir.listFiles() } catch (_: Exception) { null } ?: return
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (x in list) {
+            if (n >= 100) break
+            if (x.isFile && now - x.lastModified() < 60_000) { n++; onFile(x) }
+        }
     }
 
     private fun onNative(s: String) {
@@ -116,10 +136,16 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
         val p = s.substring(i + 1)
         if (p.isEmpty()) return // queue overflow: the guard's periodic poll is the safety net
         val f = File(p)
+        if ((m and 0x8000) != 0) { // IN_IGNORED: the watched folder was deleted / unmounted; forget it so it can be watched again
+            synchronized(this) { nativeDirs.remove(p) }
+            AvGuardState.watched.value = count()
+            return
+        }
         if ((m and 0x40000000) != 0) { // IN_ISDIR: a new sub-folder
             val d = synchronized(this) { nativeDirs[f.parent ?: ""] } ?: 0
             if (d > 0) addTree(f, d - 1)
             AvGuardState.watched.value = count()
+            scanFresh(f)
             return
         }
         if ((m and (0x8 or 0x80)) == 0) return // only CLOSE_WRITE / MOVED_TO
@@ -144,11 +170,19 @@ class DownloadWatcher(private val onFile: (File) -> Unit) {
             } else {
                 val o = object : FileObserver(dir, mask) {
                     override fun onEvent(event: Int, path: String?) {
-                        if (path == null) return
+                        if (path == null) {
+                            if ((event and (FileObserver.DELETE_SELF or FileObserver.MOVE_SELF)) != 0) {
+                                // the folder itself is gone: forget it so it can be watched again when it comes back
+                                synchronized(this@DownloadWatcher) { observers.remove(dir.path)?.stopWatching() }
+                                AvGuardState.watched.value = count()
+                            }
+                            return
+                        }
                         val f = File(dir, path)
                         if (f.isDirectory) {
                             if (depth > 0) addTree(f, depth - 1)
-                            AvGuardState.watched.value = observers.size
+                            AvGuardState.watched.value = count()
+                            scanFresh(f)
                             return
                         }
                         if ((event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) == 0) return
@@ -181,6 +215,13 @@ object AvGuard {
 
     fun nid(path: String) = (path.hashCode() and 0x7fffffff) + 100
 
+    /** "Uninstall" button for a dangerous / suspicious app that was just installed (opens the system uninstall dialog). */
+    fun uninstallAction(ctx: Context, pkg: String): Notification.Action {
+        val i = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pi = PendingIntent.getActivity(ctx, ("del:$pkg").hashCode(), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_notif), "حذف برنامه", pi).build()
+    }
+
     fun action(ctx: Context, title: String, act: String, path: String, nid: Int): Notification.Action {
         val i = Intent(ctx, GuardActionReceiver::class.java).setAction(act).putExtra("path", path).putExtra("nid", nid)
         val pi = PendingIntent.getBroadcast(ctx, (act + path).hashCode(), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -203,6 +244,7 @@ object AvGuard {
         if (!f.isFile) return
         val r = try { Av.analyzeFile(AvEnv(ctx), f) } catch (_: Exception) { null }
         results[f.path] = r to System.currentTimeMillis()
+        if (results.size > 200) results.entries.sortedBy { it.value.second }.take(100).forEach { results.remove(it.key) }
         val id = nid(f.path)
         val src = who?.let { "\n$it" } ?: ""
         if (r == null || r.level == 0) {
