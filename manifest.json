@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 71,
-  "generated": "2026-11-14T06:21:52Z",
+  "version": 72,
+  "generated": "2026-11-14T18:00:15Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "d3eac266e5d0e38637fb4e03e0a2e1e9029940a23db6ab151a910ecab0cf9c8b",
-      "size": 485527
+      "sha256": "f9721b741f4cb8d2cedf4394c2b6333fb2731ec3fe3847ff4ae7fea6d16367d4",
+      "size": 488388
     }
   ],
   "counts": {
-    "hashes": 3352,
+    "hashes": 3354,
     "packages": 615,
     "certs": 473,
-    "domains": 2584,
+    "domains": 2653,
     "entry_names": 7,
     "patterns": 0,
     "rules": 9
@@ -34,8 +34,8 @@
     {
       "name": "ThreatFox",
       "status": "ok",
-      "count": 679,
-      "history": 1717
+      "count": 720,
+      "history": 1743
     },
     {
       "name": "ai-intel",
