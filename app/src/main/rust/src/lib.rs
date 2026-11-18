@@ -2,10 +2,11 @@
 //! byte-for-byte compatible (sha256File, scanner*), so every Kotlin caller keeps working unchanged.
 mod engine;
 mod integrity;
+mod sysinfo;
 mod watch;
 
 use jni::objects::{JByteArray, JObject, JObjectArray, JString};
-use jni::sys::{jdouble, jint, jintArray, jlong, jobjectArray, jstring};
+use jni::sys::{jdouble, jint, jintArray, jlong, jlongArray, jobjectArray, jstring};
 use jni::JNIEnv;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::null_mut;
@@ -221,5 +222,48 @@ pub extern "system" fn Java_app_payesh_NativeEngine_integrityProbe<'l>(mut env: 
     guard(null_mut(), || {
         let v = integrity::probe();
         strings_to_java(&mut env, &v)
+    })
+}
+
+// ------------------------------------------------------------------ system monitor
+
+#[no_mangle]
+pub extern "system" fn Java_app_payesh_NativeEngine_sysSnapshot<'l>(mut env: JNIEnv<'l>, _this: JObject<'l>) -> jstring {
+    guard(null_mut(), || env.new_string(sysinfo::snapshot()).map(|s| s.into_raw()).unwrap_or(null_mut()))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_payesh_NativeEngine_sysInfo<'l>(mut env: JNIEnv<'l>, _this: JObject<'l>) -> jstring {
+    guard(null_mut(), || env.new_string(sysinfo::info()).map(|s| s.into_raw()).unwrap_or(null_mut()))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_payesh_NativeEngine_sysProcesses<'l>(mut env: JNIEnv<'l>, _this: JObject<'l>) -> jobjectArray {
+    guard(null_mut(), || {
+        let v = sysinfo::processes();
+        strings_to_java(&mut env, &v)
+    })
+}
+
+/// [total, free, available] bytes of the filesystem that holds `path`; empty array if it cannot be read.
+#[no_mangle]
+pub extern "system" fn Java_app_payesh_NativeEngine_sysStorage<'l>(
+    mut env: JNIEnv<'l>, _this: JObject<'l>, jpath: JString<'l>,
+) -> jlongArray {
+    guard(null_mut(), || {
+        let path: String = match env.get_string(&jpath) {
+            Ok(s) => s.into(),
+            Err(_) => return null_mut(),
+        };
+        let v = sysinfo::storage(&path);
+        match env.new_long_array(v.len() as jint) {
+            Ok(a) => {
+                if !v.is_empty() {
+                    let _ = env.set_long_array_region(&a, 0, &v);
+                }
+                a.into_raw()
+            }
+            Err(_) => null_mut(),
+        }
     })
 }

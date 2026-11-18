@@ -99,7 +99,8 @@ fun PayeshApp(vm: MainVM, onToggle: () -> Unit, onUsage: () -> Unit, onVpnSettin
         else if (page == 1) HistoryScreen(page) { page = it }
         else if (page == 2) SysStatsScreen(page) { page = it }
         else if (page == 3) CleanerScreen(page) { page = it }
-        else AntivirusScreen(page) { page = it }
+        else if (page == 4) AntivirusScreen(page) { page = it }
+        else SysMonitorScreen(page) { page = it }
 
         // Bottom bar (like the "Buy Ticket" bar in the reference)
         Row(
@@ -142,7 +143,7 @@ fun PageSwitch(page: Int, onPage: (Int) -> Unit) {
             .horizontalScroll(rememberScrollState()).padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        listOf("زنده", "تاریخچه", "آمار سیستم", "پاکسازی", "آنتی‌ویروس").forEachIndexed { i, t ->
+        listOf("زنده", "تاریخچه", "آمار سیستم", "پاکسازی", "آنتی‌ویروس", "مانیتور سیستم").forEachIndexed { i, t ->
             val sel = page == i
             Box(
                 Modifier.clip(RoundedCornerShape(16.dp))

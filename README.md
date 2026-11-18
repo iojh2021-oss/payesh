@@ -127,3 +127,12 @@ PQ برقرار شد (مثلاً X25519MLKEM768) / برنامه PQ پیشنها�
 اجازهٔ «نصب برنامه‌های ناشناس» برای پایش یک بار لازم است. اندروید ۱۲+ نصب خودبه‌روزرسانی را بدون تأیید مجاز می‌کند (مجوزهای REQUEST_INSTALL_PACKAGES و UPDATE_PACKAGES_WITHOUT_USER_ACTION)؛
 اگر گوشی (مثلاً One UI یا Play Protect) باز هم تأیید بخواهد، تأیید نشان داده می‌شود یا در اعلان می‌آید. بعد از به‌روزرسانی، محافظ و VPN (اگر روشن بودند) خودکار برمی‌گردند.
 هشدار: چون هر بیلد منتشر می‌شود، «نصب خودکار» هر بیلد تازه‌ای را نصب می‌کند؛ اگر بیلد خراب منتشر شود به گوشی هم می‌رسد.
+
+
+## System monitor page (مانیتور سیستم)
+A live, graphical device monitor: CPU gauge + per-core bars (clusters, clock, governor), RAM breakdown
+(used / cache / free / swap), internal + SD storage with the biggest apps, thermal sensors, this app's own
+processes and threads, recent apps, battery, and full hardware info (SoC, cores, ABI, kernel, display, GL).
+The readings are taken by the native Rust engine (`app/src/main/rust/src/sysinfo.rs`, from /proc and /sys)
+and drawn by `SysMonitorUi.kt`. Android limits what a normal app may read: `/proc/stat` is blocked on newer
+releases (the page then shows a clock-speed based estimate and says so) and other apps' processes are not visible.

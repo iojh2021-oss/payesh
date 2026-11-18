@@ -30,4 +30,11 @@ object NativeEngine {
 
     /** Lines of "H|CODE|detail" or "M|CODE|detail" (H = high, M = medium). */
     external fun integrityProbe(): Array<String>?
+
+    // system monitor (Rust, reads /proc and /sys): "key=value" lines, "P|..."/"T|..." process lines,
+    // and [total, free, available] bytes for a path
+    external fun sysSnapshot(): String?
+    external fun sysInfo(): String?
+    external fun sysProcesses(): Array<String>?
+    external fun sysStorage(path: String): LongArray?
 }
