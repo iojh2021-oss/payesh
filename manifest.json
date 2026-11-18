@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 80,
-  "generated": "2026-11-18T07:28:11Z",
+  "version": 81,
+  "generated": "2026-11-18T20:30:05Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "9c24ded47a5316626649a8b73f11c3a9c7a4b55cbbd1a4e5c2052d01b1bcf2a2",
-      "size": 507873
+      "sha256": "575ca7f736ab78a7ecb68d91ca7aed67a25a353b261fb8c20da499cad5a2a55d",
+      "size": 509892
     }
   ],
   "counts": {
-    "hashes": 3450,
+    "hashes": 3460,
     "packages": 615,
     "certs": 473,
-    "domains": 2943,
+    "domains": 2976,
     "entry_names": 7,
     "patterns": 0,
     "rules": 9
@@ -23,7 +23,7 @@
     {
       "name": "MalwareBazaar",
       "status": "ok",
-      "count": 75,
+      "count": 61,
       "new": 7
     },
     {
@@ -34,8 +34,8 @@
     {
       "name": "ThreatFox",
       "status": "ok",
-      "count": 650,
-      "history": 2065
+      "count": 620,
+      "history": 2102
     },
     {
       "name": "ai-intel",
