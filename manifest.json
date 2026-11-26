@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "version": 93,
-  "generated": "2026-11-26T08:16:35Z",
+  "version": 94,
+  "generated": "2026-11-26T21:30:22Z",
   "min_app": 1,
   "files": [
     {
       "name": "av-db.json",
-      "sha256": "1ec072fe9cff30e6b1fca4ec6310a8cb496eb1d8698b1ef0d731ea643371358c",
-      "size": 540043
+      "sha256": "fcd42bf0772bb1989b417e419cd2b06bc83141a295aaad4b4333bac49dbc3996",
+      "size": 545371
     }
   ],
   "counts": {
-    "hashes": 3535,
+    "hashes": 3546,
     "packages": 615,
     "certs": 473,
-    "domains": 3544,
+    "domains": 3655,
     "entry_names": 7,
     "patterns": 0,
     "rules": 9
@@ -23,8 +23,8 @@
     {
       "name": "MalwareBazaar",
       "status": "ok",
-      "count": 10,
-      "new": 2
+      "count": 16,
+      "new": 11
     },
     {
       "name": "stalkerware-indicators",
@@ -33,8 +33,8 @@
     },
     {
       "name": "ThreatFox",
-      "status": "failed: IncompleteRead(64375 bytes read)",
-      "count": 0,
+      "status": "ok",
+      "count": 565,
       "history": 2703
     },
     {
